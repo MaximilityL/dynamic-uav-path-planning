@@ -1,0 +1,11 @@
+name: "dynamic_uav_path_planning_dense_obstacles"
+description: "Harder scenario with denser moving obstacles"
+
+environment:
+  num_dynamic_obstacles: 10
+  connect_radius: 5.0
+  obstacle_speed_range: [0.2, 0.55]
+  max_episode_steps: 360
+
+training:
+  num_episodes: 75

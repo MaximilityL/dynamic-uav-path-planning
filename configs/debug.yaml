@@ -1,0 +1,19 @@
+name: "dynamic_uav_path_planning_debug"
+description: "Short debug run for quick validation"
+
+environment:
+  num_dynamic_obstacles: 3
+  max_episode_steps: 60
+
+agent:
+  rollout_episodes: 1
+  ppo_epochs: 1
+  mini_batch_size: 16
+
+training:
+  num_episodes: 5
+  save_interval: 5
+  eval_interval: 5
+
+evaluation:
+  num_episodes: 2

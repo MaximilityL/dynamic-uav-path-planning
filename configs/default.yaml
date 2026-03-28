@@ -1,0 +1,74 @@
+name: "dynamic_uav_path_planning_default"
+version: "0.2.0"
+description: "Bare-minimum GNN-ready dynamic UAV path-planning scaffold"
+tags: ["uav", "path-planning", "dynamic-airspace", "pybullet", "gnn", "ppo"]
+
+environment:
+  type: "dynamic_airspace"
+  backend: "gym_pybullet_drones"
+  num_agents: 1
+  num_dynamic_obstacles: 5
+  obstacle_radius: 0.2
+  goal_tolerance: 0.3
+  collision_distance: 0.15
+  max_episode_steps: 300
+  gui: false
+  observation_type: "kin"
+  action_type: "vel"
+  pyb_freq: 240
+  ctrl_freq: 30
+  seed: 7
+  connect_radius: 4.0
+  workspace_bounds: [[-3.0, 3.0], [-3.0, 3.0], [0.5, 2.5]]
+  obstacle_speed_range: [0.15, 0.45]
+  reward_weights:
+    goal: 25.0
+    progress: 6.0
+    collision: -20.0
+    clearance: 0.2
+    effort: -0.01
+    time: -0.02
+
+agent:
+  type: "graph_ppo"
+  encoder_type: "gnn"
+  node_feature_dim: 10
+  edge_feature_dim: 4
+  global_feature_dim: 4
+  action_dim: 4
+  hidden_dim: 128
+  message_passing_steps: 2
+  lr_actor: 0.0003
+  lr_critic: 0.0008
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  ppo_epochs: 2
+  mini_batch_size: 64
+  rollout_episodes: 2
+  max_grad_norm: 0.5
+  action_std_init: 0.35
+  device: "auto"
+
+training:
+  num_episodes: 50
+  save_interval: 10
+  eval_interval: 10
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+  results_dir: "results"
+  moving_average_window: 10
+  eval_episodes: 3
+
+evaluation:
+  num_episodes: 5
+  render: false
+  deterministic: true
+  save_trajectories: true
+  output_dir: "results/eval"
+
+visualization:
+  plot_dir: "results/plots"
+  trajectory_dir: "results/trajectories"
