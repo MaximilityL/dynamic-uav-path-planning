@@ -102,6 +102,9 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self.goal_reached = False
         self.collision_occurred = False
         self.min_obstacle_distance = float("inf")
+        self.min_clearance = float("inf")
+        self.cumulative_control_effort = 0.0
+        self.time_to_goal: Optional[float] = None
         self.position_history: List[np.ndarray] = []
         self.obstacle_history: List[np.ndarray] = []
         self.action_history: List[np.ndarray] = []
@@ -264,6 +267,7 @@ class DynamicAirspaceEnv(BaseEnvironment):
             obstacle_velocities=self.obstacle_velocities,
             obstacle_radius=self.obstacle_radius,
             goal_tolerance=self.goal_tolerance,
+            collision_distance=self.collision_distance,
             workspace_bounds=self.workspace_bounds,
             obstacle_speed_range=self.obstacle_speed_range,
             connect_radius=self.connect_radius,
@@ -279,17 +283,21 @@ class DynamicAirspaceEnv(BaseEnvironment):
             default_distance=self.connect_radius,
         )
 
-    def _episode_info(self, reward_components: Optional[Dict[str, float]] = None) -> Dict[str, float]:
+    def _episode_info(self, reward_components: Optional[Dict[str, float]] = None) -> Dict[str, object]:
         """Build a consistent info dictionary."""
         drone_position, _ = self._drone_position_velocity()
         info = {
             "distance_to_goal": float(np.linalg.norm(self.goal_position - drone_position)),
             "min_obstacle_distance": float(self.min_obstacle_distance),
+            "min_clearance": float(self.min_clearance),
             "goal_reached": float(self.goal_reached),
             "collision": float(self.collision_occurred),
             "episode_return": float(self.episode_return),
             "path_length": float(self.path_length),
             "steps": float(self.current_step),
+            "control_effort": float(self.cumulative_control_effort / max(self.current_step, 1)),
+            "episode_duration": float(self.current_step / max(self.ctrl_freq, 1)),
+            "time_to_goal": None if self.time_to_goal is None else float(self.time_to_goal),
         }
         if reward_components is not None:
             info["reward_components"] = reward_components
@@ -326,6 +334,9 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self.goal_reached = False
         self.collision_occurred = False
         self.min_obstacle_distance = self._minimum_obstacle_distance(drone_position)
+        self.min_clearance = self.min_obstacle_distance - (self.obstacle_radius + self.collision_distance)
+        self.cumulative_control_effort = 0.0
+        self.time_to_goal = None
         self.start_to_goal_distance = float(np.linalg.norm(self.goal_position - drone_position))
         self.prev_distance_to_goal = self.start_to_goal_distance
         self.position_history = [drone_position.copy()]
@@ -352,6 +363,7 @@ class DynamicAirspaceEnv(BaseEnvironment):
         drone_position, drone_velocity = self._drone_position_velocity()
         self.current_step += 1
         self.path_length += float(np.linalg.norm(drone_position - previous_position))
+        self.cumulative_control_effort += float(np.linalg.norm(action_array) / np.sqrt(max(action_array.size, 1)))
         self.position_history.append(drone_position.copy())
         self.obstacle_history.append(self.obstacle_positions.copy())
         self.action_history.append(action_array.copy())
@@ -376,24 +388,31 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self.goal_reached = self.goal_reached or goal_now
         self.collision_occurred = self.collision_occurred or collision_now
         self.min_obstacle_distance = min(self.min_obstacle_distance, min_obstacle_distance)
+        self.min_clearance = min(self.min_clearance, clearance_margin)
         self.episode_return += reward
         self.reward_history.append(reward)
+        if goal_now and self.time_to_goal is None:
+            self.time_to_goal = float(self.current_step / max(self.ctrl_freq, 1))
 
         terminated = bool(goal_now or collision_now)
         truncated = bool((self.current_step >= self.max_episode_steps) and not terminated)
         observation = self._build_observation(drone_position=drone_position, drone_velocity=drone_velocity)
         return observation, reward, terminated, truncated, self._episode_info(reward_components=reward_components)
 
-    def get_episode_summary(self) -> Dict[str, float]:
+    def get_episode_summary(self) -> Dict[str, object]:
         """Return summary metrics for the current episode."""
         return {
             "episode_return": float(self.episode_return),
             "success": float(self.goal_reached),
             "collision": float(self.collision_occurred),
             "min_obstacle_distance": float(self.min_obstacle_distance),
+            "min_clearance": float(self.min_clearance),
             "path_length": float(self.path_length),
             "start_to_goal_distance": float(self.start_to_goal_distance),
             "steps": float(self.current_step),
+            "control_effort": float(self.cumulative_control_effort / max(self.current_step, 1)),
+            "episode_duration": float(self.current_step / max(self.ctrl_freq, 1)),
+            "time_to_goal": None if self.time_to_goal is None else float(self.time_to_goal),
         }
 
     def export_episode(self) -> Dict[str, object]:

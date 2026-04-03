@@ -1,5 +1,5 @@
 """Visualization helpers for saved experiment artifacts."""
 
-from .plots import plot_training_history
+from .plots import load_jsonl, plot_training_history
 
-__all__ = ["plot_training_history"]
+__all__ = ["load_jsonl", "plot_training_history"]

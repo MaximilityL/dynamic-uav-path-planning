@@ -29,6 +29,7 @@ def build_output_layout(config: Config) -> Dict[str, Path]:
     layout = {
         "results_root": results_root,
         "train": results_root / "train",
+        "train_evaluations": results_root / "train" / "evaluations",
         "eval": Path(config.evaluation.output_dir),
         "trajectories": Path(config.visualization.trajectory_dir),
         "plots": Path(config.visualization.plot_dir),

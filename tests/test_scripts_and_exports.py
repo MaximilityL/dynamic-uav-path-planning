@@ -71,7 +71,11 @@ def test_train_script_main_parses_args(monkeypatch: pytest.MonkeyPatch, capsys: 
             "avg_episode_return": 1.0,
             "success_rate": 0.5,
             "collision_rate": 0.25,
-            "avg_path_efficiency": 0.8,
+            "avg_min_clearance": 0.4,
+            "avg_control_effort": 0.2,
+            "best_eval_success_rate": 0.6,
+            "best_eval_collision_rate": 0.1,
+            "best_eval_avg_episode_return": 1.2,
             "best_model_path": "checkpoints/best_model.pth",
         },
     )
@@ -108,8 +112,10 @@ def test_evaluate_script_main_parses_args(monkeypatch: pytest.MonkeyPatch, capsy
             "success_rate": 0.5,
             "collision_rate": 0.0,
             "avg_episode_return": 2.0,
-            "avg_min_obstacle_distance": 1.5,
-            "avg_path_efficiency": 0.7,
+            "avg_path_length": 4.5,
+            "avg_time_to_goal": 2.5,
+            "avg_min_clearance": 1.5,
+            "avg_control_effort": 0.7,
         },
     )
     monkeypatch.setattr(

@@ -23,7 +23,7 @@ def assert_finite(name: str, value: float) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a dynamic-airspace smoke test")
-    parser.add_argument("--config", type=str, default="configs/default.yaml", help="Configuration file")
+    parser.add_argument("--config", type=str, default="configs/debug.yaml", help="Configuration file")
     args = parser.parse_args()
 
     config = load_config(args.config)

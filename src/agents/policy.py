@@ -56,11 +56,15 @@ class GraphActorCritic(nn.Module):
         self.register_buffer("action_high", action_high.float())
         self.register_buffer("action_scale", (self.action_high - self.action_low) / 2.0)
         self.register_buffer("action_bias", (self.action_high + self.action_low) / 2.0)
+        self.register_buffer("speed_scale", torch.maximum(self.action_high[-1].abs(), self.action_low[-1].abs()))
 
     def distribution_and_value(self, observation: GraphTensorBatch) -> tuple[Normal, torch.Tensor]:
         """Build the action distribution and value estimate."""
         embedding = self.encoder(observation)
-        mean = torch.tanh(self.policy_head(embedding)) * self.action_scale + self.action_bias
+        raw_policy = self.policy_head(embedding)
+        direction_mean = torch.tanh(raw_policy[:, :-1]) * self.action_scale[:-1] + self.action_bias[:-1]
+        speed_mean = torch.sigmoid(raw_policy[:, -1:]) * self.speed_scale
+        mean = torch.cat([direction_mean, speed_mean], dim=-1)
         std = torch.exp(self.log_std).unsqueeze(0).expand_as(mean)
         distribution = Normal(mean, std)
         value = self.value_head(embedding).squeeze(-1)
@@ -71,6 +75,8 @@ class GraphActorCritic(nn.Module):
         distribution, value = self.distribution_and_value(observation)
         action = distribution.mean if deterministic else distribution.rsample()
         action = torch.clamp(action, self.action_low, self.action_high)
+        action = action.clone()
+        action[:, -1] = torch.clamp(action[:, -1], 0.0, self.speed_scale)
         log_prob = distribution.log_prob(action).sum(dim=-1)
         return action, log_prob, value
 

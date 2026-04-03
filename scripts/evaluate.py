@@ -46,8 +46,10 @@ def main() -> int:
     print(f"success_rate={summary['success_rate']:.3f}")
     print(f"collision_rate={summary['collision_rate']:.3f}")
     print(f"avg_episode_return={summary['avg_episode_return']:.3f}")
-    print(f"avg_min_obstacle_distance={summary['avg_min_obstacle_distance']:.3f}")
-    print(f"avg_path_efficiency={summary['avg_path_efficiency']:.3f}")
+    print(f"avg_path_length={summary['avg_path_length']:.3f}")
+    print(f"avg_time_to_goal={summary['avg_time_to_goal']:.3f}")
+    print(f"avg_min_clearance={summary['avg_min_clearance']:.3f}")
+    print(f"avg_control_effort={summary['avg_control_effort']:.3f}")
     return 0
 
 

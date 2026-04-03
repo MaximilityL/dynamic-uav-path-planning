@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.training.runner import evaluate_agent, train_agent
 from src.utils.config import load_config
-from src.visualization import plot_training_history
+from src.visualization import load_jsonl, plot_training_history
 
 
 def test_train_evaluate_and_plot_pipeline(tmp_path: Path) -> None:
@@ -20,6 +20,8 @@ def test_train_evaluate_and_plot_pipeline(tmp_path: Path) -> None:
     config.agent.mini_batch_size = 8
     config.training.num_episodes = 3
     config.training.save_interval = 1
+    config.training.eval_interval = 2
+    config.training.eval_episodes = 2
     config.training.results_dir = str(tmp_path / "results")
     config.training.log_dir = str(tmp_path / "logs")
     config.training.checkpoint_dir = str(tmp_path / "checkpoints")
@@ -30,9 +32,12 @@ def test_train_evaluate_and_plot_pipeline(tmp_path: Path) -> None:
 
     summary = train_agent(config=config)
     assert summary["num_episodes"] == 3
+    assert summary["best_eval_success_rate"] >= 0.0
 
     best_model_path = Path(summary["best_model_path"])
     assert best_model_path.exists()
+    eval_history = load_jsonl(tmp_path / "results" / "train" / "eval_history.jsonl")
+    assert len(eval_history) == 2
 
     evaluation_summary = evaluate_agent(
         config=config,
@@ -43,6 +48,7 @@ def test_train_evaluate_and_plot_pipeline(tmp_path: Path) -> None:
         save_outputs=True,
     )
     assert evaluation_summary["num_episodes"] == 2
+    assert "avg_min_clearance" in evaluation_summary
 
     plot_path = plot_training_history(
         history_path=tmp_path / "results" / "train" / "history.jsonl",

@@ -36,7 +36,7 @@ def test_load_partial_config_uses_defaults(tmp_path: Path) -> None:
     assert config.name == "partial_config"
     assert config.environment.num_dynamic_obstacles == 2
     assert config.agent.encoder_type == "mlp"
-    assert config.environment.max_episode_steps == 300
+    assert config.environment.max_episode_steps == 800
 
 
 def test_validate_config_rejects_bad_encoder() -> None:

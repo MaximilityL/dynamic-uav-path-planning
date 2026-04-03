@@ -1,17 +1,17 @@
-name: "dynamic_uav_path_planning_default"
+name: "dynamic_uav_path_planning_easy_train"
 version: "1.0.0"
-description: "Main PPO+GNN config for single-UAV dynamic obstacle avoidance"
-tags: ["uav", "path-planning", "dynamic-airspace", "pybullet", "gnn", "ppo"]
+description: "Easier PPO+GNN preset for quick learning-signal validation"
+tags: ["uav", "path-planning", "dynamic-airspace", "pybullet", "gnn", "ppo", "easy"]
 
 environment:
   type: "dynamic_airspace"
   backend: "gym_pybullet_drones"
   num_agents: 1
-  num_dynamic_obstacles: 5
+  num_dynamic_obstacles: 1
   obstacle_radius: 0.2
-  goal_tolerance: 0.35
+  goal_tolerance: 0.9
   collision_distance: 0.15
-  max_episode_steps: 800
+  max_episode_steps: 700
   gui: false
   observation_type: "kin"
   action_type: "vel"
@@ -20,7 +20,7 @@ environment:
   seed: 7
   connect_radius: 5.0
   workspace_bounds: [[-3.0, 3.0], [-3.0, 3.0], [0.5, 2.5]]
-  obstacle_speed_range: [0.12, 0.35]
+  obstacle_speed_range: [0.05, 0.1]
   reward_weights:
     goal: 40.0
     progress: 8.0
@@ -47,23 +47,23 @@ agent:
   value_coef: 0.5
   ppo_epochs: 4
   mini_batch_size: 128
-  rollout_episodes: 8
+  rollout_episodes: 6
   max_grad_norm: 0.5
   action_std_init: 0.45
   device: "auto"
 
 training:
-  num_episodes: 1000
-  save_interval: 25
-  eval_interval: 25
+  num_episodes: 160
+  save_interval: 20
+  eval_interval: 20
   checkpoint_dir: "checkpoints"
   log_dir: "logs"
   results_dir: "results"
   moving_average_window: 20
-  eval_episodes: 10
+  eval_episodes: 8
 
 evaluation:
-  num_episodes: 20
+  num_episodes: 16
   render: false
   deterministic: true
   save_trajectories: true

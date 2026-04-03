@@ -39,10 +39,10 @@ def test_save_helpers_and_plot_loader_round_trip(tmp_path: Path) -> None:
 def test_plot_training_history_generates_figure(tmp_path: Path) -> None:
     """The plotting helper should generate an image from JSONL history."""
     history_path = tmp_path / "history.jsonl"
-    for episode, reward, success, collision in [
-        (1, 1.0, 0.0, 0.0),
-        (2, 2.0, 1.0, 0.0),
-        (3, -1.0, 0.0, 1.0),
+    for episode, reward, success, collision, min_clearance in [
+        (1, 1.0, 0.0, 0.0, 0.5),
+        (2, 2.0, 1.0, 0.0, 0.7),
+        (3, -1.0, 0.0, 1.0, -0.1),
     ]:
         append_jsonl(
             history_path,
@@ -51,8 +51,18 @@ def test_plot_training_history_generates_figure(tmp_path: Path) -> None:
                 "episode_return": reward,
                 "success": success,
                 "collision": collision,
+                "min_clearance": min_clearance,
             },
         )
+    append_jsonl(
+        tmp_path / "eval_history.jsonl",
+        {
+            "train_episode": 3,
+            "success_rate": 0.5,
+            "collision_rate": 0.25,
+            "avg_min_clearance": 0.2,
+        },
+    )
 
     output_path = plot_training_history(history_path=history_path, output_dir=tmp_path / "plots")
     assert output_path.exists()

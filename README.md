@@ -1,10 +1,10 @@
 # Dynamic UAV Path Planning
 
-Version: `0.2.0`
+Version: `1.0.0`
 
-This repository is a research scaffold for learning-based UAV path planning in dynamic environments. It currently focuses on a graph-based observation pipeline, a PyBullet-backed single-UAV environment, and a lightweight PPO baseline that is easy to extend.
+This repository is a research codebase for learning-based UAV path planning in dynamic environments. It focuses on a graph-based observation pipeline, a PyBullet-backed single-UAV environment, and a PPO baseline that is straightforward to extend and evaluate.
 
-The intent is still infrastructure-first: make the repo clean, testable, and ready for iteration before claiming that the underlying path-planning problem is solved.
+The current release is centered on a reproducible training and evaluation workflow rather than benchmark claims.
 
 ## Focus
 
@@ -19,12 +19,12 @@ The intent is still infrastructure-first: make the repo clean, testable, and rea
 - dense graph observations with node, edge, and global features
 - a PPO-style graph actor-critic baseline in plain PyTorch
 - train, evaluate, smoke-test, and plotting entrypoints
-- config presets for default, debug, and ablation workflows
-- tests, linting, CI, and lightweight docs for repository maintainability
+- config presets for default, debug, and training workflow variants
+- tests, linting, and release-ready experiment utilities
 
 ## Current Scope
 
-This scaffold currently supports:
+This release currently supports:
 
 - one controlled UAV
 - one goal node
@@ -32,7 +32,7 @@ This scaffold currently supports:
 - graph observations with a stable contract
 - repeatable train/eval artifact generation
 
-This scaffold does not yet include:
+This release does not yet include:
 
 - multi-UAV coordination logic
 - urban map assets or airspace rules
@@ -56,8 +56,9 @@ dynamic-uav-path-planning/
 │   ├── baselines/
 │   ├── scenarios/
 │   ├── debug.yaml
-│   └── default.yaml
-├── docs/
+│   ├── default.yaml
+│   ├── easy_train.yaml
+│   └── hard_obstacles.yaml
 ├── scripts/
 │   ├── _common.py
 │   ├── evaluate.py
@@ -73,7 +74,6 @@ dynamic-uav-path-planning/
 │   ├── utils/
 │   └── visualization/
 ├── tests/
-├── .github/
 ├── checkpoints/
 ├── logs/
 ├── results/
@@ -91,8 +91,8 @@ source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e ".[dev]"
 python scripts/smoke_test.py
-python scripts/train.py --config configs/default.yaml
-python scripts/evaluate.py --config configs/default.yaml --model checkpoints/best_model.pth
+python scripts/train.py --config configs/easy_train.yaml
+python scripts/evaluate.py --config configs/easy_train.yaml --model checkpoints/best_model.pth
 python scripts/plot_results.py
 ```
 
@@ -109,15 +109,12 @@ Useful config presets:
 
 - `configs/default.yaml`
 - `configs/debug.yaml`
+- `configs/easy_train.yaml`
+- `configs/hard_obstacles.yaml`
 - `configs/baselines/mlp.yaml`
 - `configs/scenarios/dense_obstacles.yaml`
 
-## Documentation
-
-- `docs/architecture.md`
-- `docs/observation_spec.md`
-- `docs/metrics.md`
-- `docs/experiment_workflow.md`
+Public repository documentation is consolidated into this README. Local working notes under `docs/` are intentionally kept out of Git.
 
 ## Near-Term Direction
 

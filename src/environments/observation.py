@@ -29,6 +29,7 @@ def build_dense_graph_observation(
     obstacle_velocities: np.ndarray,
     obstacle_radius: float,
     goal_tolerance: float,
+    collision_distance: float,
     workspace_bounds: np.ndarray,
     obstacle_speed_range: tuple[float, float],
     connect_radius: float,
@@ -72,17 +73,20 @@ def build_dense_graph_observation(
             if receiver == 0 or sender == 0 or distance <= connect_radius:
                 adjacency[receiver, sender] = 1.0
                 edge_features[receiver, sender, 0:3] = delta / workspace_span
-                edge_features[receiver, sender, 3] = distance / max(connect_radius, 1e-6)
+                contact_clearance = distance - (radii[receiver] + radii[sender])
+                edge_features[receiver, sender, 3] = contact_clearance / max(connect_radius, 1e-6)
 
     min_distance = minimum_obstacle_distance(
         drone_position,
         obstacle_positions,
         default_distance=connect_radius,
     )
+    safety_distance = obstacle_radius + collision_distance
+    clearance_proxy = (min_distance - safety_distance) / max(connect_radius, 1e-6)
     global_features = np.asarray(
         [
             np.linalg.norm(goal_position - drone_position) / max(float(np.linalg.norm(workspace_span)), 1e-6),
-            min_distance / max(connect_radius, 1e-6),
+            clearance_proxy,
             np.linalg.norm(drone_velocity),
             float(current_step / max(max_episode_steps, 1)),
         ],

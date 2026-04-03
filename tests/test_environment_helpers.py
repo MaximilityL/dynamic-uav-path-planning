@@ -66,6 +66,7 @@ def test_observation_and_reward_helpers_handle_edge_cases() -> None:
         obstacle_velocities=obstacle_velocities,
         obstacle_radius=0.2,
         goal_tolerance=0.3,
+        collision_distance=0.15,
         workspace_bounds=workspace_bounds,
         obstacle_speed_range=(0.15, 0.45),
         connect_radius=4.0,
@@ -75,6 +76,7 @@ def test_observation_and_reward_helpers_handle_edge_cases() -> None:
     assert observation["node_features"].shape == (4, 10)
     assert observation["adjacency"][0, 1] == 1.0
     assert observation["global_features"].shape == (4,)
+    assert np.isfinite(observation["edge_features"][0, 2, 3])
 
     fallback_distance = minimum_obstacle_distance(
         drone_position=drone_position,

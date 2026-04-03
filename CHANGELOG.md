@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.0] - 2026-04-03
+
+### Added
+- Release-ready training presets for easier and harder obstacle regimes via `configs/easy_train.yaml` and `configs/hard_obstacles.yaml`.
+- Periodic evaluation tracking during training, including per-evaluation summaries and saved best-trajectory artifacts.
+- Expanded safety and control metrics such as clearance, control effort, episode duration, and time-to-goal reporting across training and evaluation flows.
+
+### Changed
+- Promoted the project metadata and config surface to `1.0.0`.
+- Reworked the default and debug PPO configuration values around longer training runs, stronger reward shaping, and clearer smoke-test behavior.
+- Updated the policy, environment, metrics, and visualization pipeline to emphasize safer action outputs, best-checkpoint selection, and more informative plots.
+- Consolidated public repository documentation into `README.md` while keeping local `docs/` content ignored from Git tracking.
+
 ## [0.2.0] - 2026-03-28
 
 ### Added

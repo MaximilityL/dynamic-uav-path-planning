@@ -33,7 +33,11 @@ def main() -> int:
     print(f"avg_episode_return={summary['avg_episode_return']:.3f}")
     print(f"success_rate={summary['success_rate']:.3f}")
     print(f"collision_rate={summary['collision_rate']:.3f}")
-    print(f"avg_path_efficiency={summary['avg_path_efficiency']:.3f}")
+    print(f"avg_min_clearance={summary['avg_min_clearance']:.3f}")
+    print(f"avg_control_effort={summary['avg_control_effort']:.3f}")
+    print(f"best_eval_success_rate={summary['best_eval_success_rate']:.3f}")
+    print(f"best_eval_collision_rate={summary['best_eval_collision_rate']:.3f}")
+    print(f"best_eval_avg_episode_return={summary['best_eval_avg_episode_return']:.3f}")
     print(f"best_model={summary['best_model_path']}")
     return 0
 

@@ -12,6 +12,7 @@ dist/
 .coverage
 coverage.xml
 htmlcov/
+docs/
 
 checkpoints/*
 !checkpoints/.gitkeep
