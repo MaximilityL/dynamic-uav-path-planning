@@ -43,18 +43,38 @@ class EnvironmentConfig:
     obstacle_speed_range: tuple = (0.12, 0.35)
     auto_time_budget_steps_per_meter: float = 0.0
     auto_time_budget_padding: int = 0
+    auto_time_budget_max_steps: int = 0
     scenario_config: Dict[str, Any] = field(default_factory=dict)
     teacher_config: Dict[str, Any] = field(default_factory=dict)
     reward_weights: Dict[str, float] = field(
         default_factory=lambda: {
             "goal": 40.0,
             "progress": 8.0,
+            "progress_negative_scale": 1.0,
+            "frontier_progress": 0.0,
+            "commit_bonus_min_clearance": 0.0,
+            "goal_proximity_bonus": 0.0,
+            "goal_proximity_radius": 0.0,
+            "goal_proximity_power": 1.0,
+            "progress_milestone_bonus": 0.0,
+            "progress_milestone_thresholds": (),
+            "progress_milestone_bonus_weights": (),
             "collision": -40.0,
             "clearance": 0.5,
+            "clearance_positive_scale": 0.02,
+            "danger_clearance_threshold": 0.0,
+            "danger_clearance_penalty": 0.0,
+            "danger_clearance_power": 1.0,
             "effort": -0.005,
             "time": -0.01,
             "timeout": -8.0,
             "timeout_distance": -20.0,
+            "remaining_distance": 0.0,
+            "stall": 0.0,
+            "stall_window_steps": 0,
+            "stall_progress_threshold": 0.0,
+            "stall_grace_steps": 0,
+            "stall_remaining_ratio_threshold": 0.15,
         }
     )
 
@@ -99,6 +119,8 @@ class TrainingConfig:
     moving_average_window: int = 20
     eval_episodes: int = 10
     print_interval: int = 10
+    resume: Dict[str, Any] = field(default_factory=dict)
+    stage_regression_protection: Dict[str, Any] = field(default_factory=dict)
     curriculum: list = field(default_factory=list)
 
 
@@ -153,7 +175,11 @@ class Config:
         if "agent" in payload:
             payload["agent"] = AgentConfig(**payload["agent"])
         if "training" in payload:
-            payload["training"] = TrainingConfig(**payload["training"])
+            training_dict = dict(payload["training"])
+            training_dict["resume"] = dict(training_dict.get("resume", {}))
+            training_dict["stage_regression_protection"] = dict(training_dict.get("stage_regression_protection", {}))
+            training_dict["curriculum"] = list(training_dict.get("curriculum", []))
+            payload["training"] = TrainingConfig(**training_dict)
         if "evaluation" in payload:
             payload["evaluation"] = EvaluationConfig(**payload["evaluation"])
         if "visualization" in payload:
@@ -232,6 +258,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("auto_time_budget_steps_per_meter must be non-negative.")
     if config.environment.auto_time_budget_padding < 0:
         raise ValueError("auto_time_budget_padding must be non-negative.")
+    if config.environment.auto_time_budget_max_steps < 0:
+        raise ValueError("auto_time_budget_max_steps must be non-negative.")
     if len(config.environment.obstacle_speed_range) != 2:
         raise ValueError("obstacle_speed_range must contain exactly two values.")
     if config.environment.obstacle_speed_range[0] < 0.0:
@@ -256,6 +284,10 @@ def validate_config(config: Config) -> None:
         raise ValueError("training.eval_episodes must be positive.")
     if config.training.print_interval <= 0:
         raise ValueError("training.print_interval must be positive.")
+    if not isinstance(config.training.resume, dict):
+        raise ValueError("training.resume must be a mapping.")
+    if not isinstance(config.training.stage_regression_protection, dict):
+        raise ValueError("training.stage_regression_protection must be a mapping.")
     if not isinstance(config.training.curriculum, list):
         raise ValueError("training.curriculum must be a list.")
     if config.evaluation.num_episodes <= 0:

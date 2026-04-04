@@ -18,12 +18,31 @@ DEFAULT_SCENARIO_CONFIG: Dict[str, object] = {
     "min_start_goal_distance": 2.5,
     "obstacle_pair_clearance_margin": 0.15,
     "obstacle_start_goal_clearance_margin": 0.2,
+    "obstacle_start_goal_exclusion_radius": None,
+    "route_obstacle_count": 0,
+    "route_obstacle_progress_range": (0.35, 0.75),
+    "route_obstacle_lateral_offset_range": (-0.35, 0.35),
+    "route_obstacle_vertical_offset_range": (-0.18, 0.18),
+    "route_obstacle_longitudinal_jitter": 0.1,
 }
 
 
 def _scenario_float(config: Dict[str, object], key: str) -> float:
     """Read a float-valued scenario option with a default."""
     return float(config.get(key, DEFAULT_SCENARIO_CONFIG[key]))
+
+
+def _scenario_int(config: Dict[str, object], key: str) -> int:
+    """Read an int-valued scenario option with a default."""
+    return int(config.get(key, DEFAULT_SCENARIO_CONFIG[key]))
+
+
+def _scenario_optional_float(config: Dict[str, object], key: str) -> float | None:
+    """Read an optional float-valued scenario option with a default."""
+    raw_value = config.get(key, DEFAULT_SCENARIO_CONFIG[key])
+    if raw_value is None:
+        return None
+    return float(raw_value)
 
 
 def _scenario_range(config: Dict[str, object], key: str) -> tuple[float, float]:
@@ -64,6 +83,73 @@ def _progress_to_axis(bounds: np.ndarray, progress_range: tuple[float, float]) -
         float(bounds[0] + span * progress_range[0]),
         float(bounds[0] + span * progress_range[1]),
     )
+
+
+def _sample_uniform_obstacle_candidate(
+    *,
+    rng: np.random.Generator,
+    workspace_bounds: np.ndarray,
+    obstacle_xy_margin: float,
+    obstacle_z_margin: float,
+) -> np.ndarray:
+    """Sample one obstacle uniformly from the free workspace volume."""
+    x_bounds, y_bounds, z_bounds = workspace_bounds
+    return np.asarray(
+        [
+            rng.uniform(x_bounds[0] + obstacle_xy_margin, x_bounds[1] - obstacle_xy_margin),
+            rng.uniform(y_bounds[0] + obstacle_xy_margin, y_bounds[1] - obstacle_xy_margin),
+            rng.uniform(z_bounds[0] + obstacle_z_margin, z_bounds[1] - obstacle_z_margin),
+        ],
+        dtype=np.float32,
+    )
+
+
+def _sample_route_biased_obstacle_candidate(
+    *,
+    rng: np.random.Generator,
+    workspace_bounds: np.ndarray,
+    start_position: np.ndarray,
+    goal_position: np.ndarray,
+    obstacle_xy_margin: float,
+    obstacle_z_margin: float,
+    scenario_config: Dict[str, object],
+) -> np.ndarray:
+    """Sample one obstacle near the straight-line route from start to goal."""
+    x_bounds, y_bounds, z_bounds = workspace_bounds
+    progress = float(np.clip(rng.uniform(*_scenario_range(scenario_config, "route_obstacle_progress_range")), 0.0, 1.0))
+    anchor = np.asarray(start_position + progress * (goal_position - start_position), dtype=np.float32)
+    longitudinal_jitter = _scenario_float(scenario_config, "route_obstacle_longitudinal_jitter")
+    lateral_offset_range = _scenario_range(scenario_config, "route_obstacle_lateral_offset_range")
+    vertical_offset_range = _scenario_range(scenario_config, "route_obstacle_vertical_offset_range")
+
+    candidate = anchor.copy()
+    candidate[0] += rng.uniform(-longitudinal_jitter, longitudinal_jitter)
+    candidate[1] += rng.uniform(*lateral_offset_range)
+    candidate[2] += rng.uniform(*vertical_offset_range)
+    candidate[0] = np.clip(candidate[0], x_bounds[0] + obstacle_xy_margin, x_bounds[1] - obstacle_xy_margin)
+    candidate[1] = np.clip(candidate[1], y_bounds[0] + obstacle_xy_margin, y_bounds[1] - obstacle_xy_margin)
+    candidate[2] = np.clip(candidate[2], z_bounds[0] + obstacle_z_margin, z_bounds[1] - obstacle_z_margin)
+    return candidate.astype(np.float32)
+
+
+def _is_valid_obstacle_candidate(
+    *,
+    candidate: np.ndarray,
+    positions: List[np.ndarray],
+    start_position: np.ndarray,
+    goal_position: np.ndarray,
+    obstacle_radius: float,
+    pair_clearance_margin: float,
+    minimum_clearance: float,
+) -> bool:
+    """Check whether one sampled obstacle candidate is usable."""
+    if np.linalg.norm(candidate - start_position) < minimum_clearance:
+        return False
+    if np.linalg.norm(candidate - goal_position) < minimum_clearance:
+        return False
+    if any(np.linalg.norm(candidate - existing) < (2.0 * obstacle_radius + pair_clearance_margin) for existing in positions):
+        return False
+    return True
 
 
 def sample_start_position(
@@ -160,23 +246,49 @@ def sample_dynamic_obstacles(
     obstacle_z_margin = _scenario_float(config, "obstacle_z_margin")
     pair_clearance_margin = _scenario_float(config, "obstacle_pair_clearance_margin")
     obstacle_start_goal_clearance_margin = _scenario_float(config, "obstacle_start_goal_clearance_margin")
-    minimum_clearance = obstacle_radius + goal_tolerance + collision_distance + obstacle_start_goal_clearance_margin
+    start_goal_exclusion_radius = _scenario_optional_float(config, "obstacle_start_goal_exclusion_radius")
+    minimum_clearance = (
+        start_goal_exclusion_radius
+        if start_goal_exclusion_radius is not None
+        else obstacle_radius + goal_tolerance + collision_distance + obstacle_start_goal_clearance_margin
+    )
+
+    route_obstacle_target = min(max(_scenario_int(config, "route_obstacle_count"), 0), num_dynamic_obstacles)
 
     while len(positions) < num_dynamic_obstacles:
-        candidate = np.asarray(
-            [
-                rng.uniform(x_bounds[0] + obstacle_xy_margin, x_bounds[1] - obstacle_xy_margin),
-                rng.uniform(y_bounds[0] + obstacle_xy_margin, y_bounds[1] - obstacle_xy_margin),
-                rng.uniform(z_bounds[0] + obstacle_z_margin, z_bounds[1] - obstacle_z_margin),
-            ],
-            dtype=np.float32,
-        )
-        if np.linalg.norm(candidate - start_position) < minimum_clearance:
-            continue
-        if np.linalg.norm(candidate - goal_position) < minimum_clearance:
-            continue
-        if any(np.linalg.norm(candidate - existing) < (2.0 * obstacle_radius + pair_clearance_margin) for existing in positions):
-            continue
+        obstacle_index = len(positions)
+        prefer_route_bias = obstacle_index < route_obstacle_target
+        route_attempts = 0
+        while True:
+            if prefer_route_bias and route_attempts < 300:
+                candidate = _sample_route_biased_obstacle_candidate(
+                    rng=rng,
+                    workspace_bounds=workspace_bounds,
+                    start_position=start_position,
+                    goal_position=goal_position,
+                    obstacle_xy_margin=obstacle_xy_margin,
+                    obstacle_z_margin=obstacle_z_margin,
+                    scenario_config=config,
+                )
+                route_attempts += 1
+            else:
+                candidate = _sample_uniform_obstacle_candidate(
+                    rng=rng,
+                    workspace_bounds=workspace_bounds,
+                    obstacle_xy_margin=obstacle_xy_margin,
+                    obstacle_z_margin=obstacle_z_margin,
+                )
+
+            if _is_valid_obstacle_candidate(
+                candidate=candidate,
+                positions=positions,
+                start_position=start_position,
+                goal_position=goal_position,
+                obstacle_radius=obstacle_radius,
+                pair_clearance_margin=pair_clearance_margin,
+                minimum_clearance=minimum_clearance,
+            ):
+                break
 
         theta = rng.uniform(0.0, 2.0 * np.pi)
         phi = rng.uniform(-0.25, 0.25)

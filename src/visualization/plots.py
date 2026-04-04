@@ -112,6 +112,8 @@ def _stage_status(records: List[dict]) -> str:
     latest_collision = float(latest.get("collision_rate", 0.0))
 
     if best_success >= 0.8:
+        if latest_success <= max(best_success - 0.25, 0.5):
+            return "regressed_after_solving"
         return "solved_or_near_solved"
     if latest_success > 0.0:
         return "partial_progress"

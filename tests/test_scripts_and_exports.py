@@ -53,11 +53,14 @@ def test_bootstrap_project_adds_repo_root(monkeypatch: pytest.MonkeyPatch) -> No
 def test_train_script_main_parses_args(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Train CLI should apply overrides and print the returned summary."""
     module = _import_script_module("train")
+    expected_plot = Path("results/plots/training_overview.png")
 
     class DummyConfig:
         def __init__(self) -> None:
             self.training = type("Training", (), {"num_episodes": 10})()
             self.environment = type("Environment", (), {"seed": 7})()
+            self.visualization = type("Visualization", (), {"plot_dir": "results/plots"})()
+            self.training.results_dir = "results"
 
     config = DummyConfig()
 
@@ -71,14 +74,24 @@ def test_train_script_main_parses_args(monkeypatch: pytest.MonkeyPatch, capsys: 
             "avg_episode_return": 1.0,
             "success_rate": 0.5,
             "collision_rate": 0.25,
+            "avg_path_length": 3.0,
+            "avg_steps": 42.0,
+            "avg_episode_duration": 1.4,
+            "avg_time_to_goal": 1.1,
             "avg_min_clearance": 0.4,
             "avg_control_effort": 0.2,
+            "avg_path_efficiency": 0.5,
             "best_eval_success_rate": 0.6,
             "best_eval_collision_rate": 0.1,
             "best_eval_avg_episode_return": 1.2,
+            "completed_stage_name": "bridge_crossing_easy",
+            "stage_regression_event_count": 1,
+            "stage_rollback_count": 1,
             "best_model_path": "checkpoints/best_model.pth",
+            "last_model_path": "checkpoints/last_model.pth",
         },
     )
+    monkeypatch.setattr(module, "plot_training_history", lambda **kwargs: expected_plot)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -87,7 +100,11 @@ def test_train_script_main_parses_args(monkeypatch: pytest.MonkeyPatch, capsys: 
 
     assert module.main() == 0
     output = capsys.readouterr().out
+    assert f"plot={expected_plot}" in output
     assert "training_episodes=4" in output
+    assert "avg_path_length=3.000" in output
+    assert "completed_stage=bridge_crossing_easy" in output
+    assert "last_model=checkpoints/last_model.pth" in output
     assert config.training.num_episodes == 4
     assert config.environment.seed == 99
 
@@ -113,9 +130,14 @@ def test_evaluate_script_main_parses_args(monkeypatch: pytest.MonkeyPatch, capsy
             "collision_rate": 0.0,
             "avg_episode_return": 2.0,
             "avg_path_length": 4.5,
+            "avg_steps": 120.0,
+            "avg_episode_duration": 4.0,
             "avg_time_to_goal": 2.5,
             "avg_min_clearance": 1.5,
             "avg_control_effort": 0.7,
+            "avg_path_efficiency": 0.5,
+            "best_episode_return": 3.0,
+            "num_episodes": 2,
         },
     )
     monkeypatch.setattr(
@@ -140,6 +162,8 @@ def test_evaluate_script_main_parses_args(monkeypatch: pytest.MonkeyPatch, capsy
     assert module.main() == 0
     output = capsys.readouterr().out
     assert "success_rate=0.500" in output
+    assert "avg_steps=120.000" in output
+    assert "output_dir=tmp/eval" in output
     assert config.evaluation.num_episodes == 2
     assert config.evaluation.render is True
     assert config.environment.seed == 101

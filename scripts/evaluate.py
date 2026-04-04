@@ -16,6 +16,13 @@ from src.training.runner import evaluate_agent
 from src.utils.config import load_config, validate_config
 
 
+def _format_metric(value: object, digits: int = 3) -> str:
+    """Format scalar evaluation metrics consistently for terminal output."""
+    if value is None:
+        return "na"
+    return f"{float(value):.{digits}f}"
+
+
 def _resolve_stage(config, stage_name: Optional[str], stage_index: Optional[int]):
     """Resolve an optional curriculum stage selection for evaluation."""
     training = getattr(config, "training", None)
@@ -77,13 +84,22 @@ def main() -> int:
     )
     if stage is not None:
         print(f"stage={stage.get('name', 'stage')}")
+    print(f"model={args.model}")
+    print(f"episodes={summary['num_episodes']}")
+    print(f"render={int(bool(config.evaluation.render))}")
+    print(f"deterministic={int(bool(config.evaluation.deterministic))}")
+    print(f"output_dir={config.evaluation.output_dir}")
     print(f"success_rate={summary['success_rate']:.3f}")
     print(f"collision_rate={summary['collision_rate']:.3f}")
     print(f"avg_episode_return={summary['avg_episode_return']:.3f}")
     print(f"avg_path_length={summary['avg_path_length']:.3f}")
+    print(f"avg_steps={_format_metric(summary.get('avg_steps'))}")
+    print(f"avg_episode_duration={_format_metric(summary.get('avg_episode_duration'))}")
     print(f"avg_time_to_goal={summary['avg_time_to_goal']:.3f}")
     print(f"avg_min_clearance={summary['avg_min_clearance']:.3f}")
     print(f"avg_control_effort={summary['avg_control_effort']:.3f}")
+    print(f"avg_path_efficiency={_format_metric(summary.get('avg_path_efficiency'))}")
+    print(f"best_episode_return={_format_metric(summary.get('best_episode_return'))}")
     return 0
 
 

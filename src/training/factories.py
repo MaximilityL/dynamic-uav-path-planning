@@ -62,6 +62,7 @@ def create_environment(config: Config, gui: Optional[bool] = None, seed: Optiona
         obstacle_speed_range=tuple(env_cfg.obstacle_speed_range),
         auto_time_budget_steps_per_meter=env_cfg.auto_time_budget_steps_per_meter,
         auto_time_budget_padding=env_cfg.auto_time_budget_padding,
+        auto_time_budget_max_steps=env_cfg.auto_time_budget_max_steps,
         scenario_config=dict(env_cfg.scenario_config),
         teacher_config=dict(env_cfg.teacher_config),
         reward_weights=dict(env_cfg.reward_weights),

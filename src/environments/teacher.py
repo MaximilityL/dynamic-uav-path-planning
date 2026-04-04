@@ -13,6 +13,9 @@ DEFAULT_TEACHER_CONFIG: Dict[str, float | bool] = {
     "action_mix": 0.0,
     "repulsion_radius": 1.0,
     "repulsion_gain": 0.5,
+    "lateral_avoidance_gain": 0.0,
+    "lateral_avoidance_radius": 0.6,
+    "forward_lookahead": 1.8,
     "far_speed": 0.9,
     "near_speed": 0.5,
     "near_goal_distance": 1.2,
@@ -52,6 +55,10 @@ def heuristic_teacher_action(
     repulsion = np.zeros(3, dtype=np.float32)
     repulsion_radius = _teacher_float(config, "repulsion_radius")
     repulsion_gain = _teacher_float(config, "repulsion_gain")
+    lateral_avoidance = np.zeros(3, dtype=np.float32)
+    lateral_avoidance_gain = _teacher_float(config, "lateral_avoidance_gain")
+    lateral_avoidance_radius = _teacher_float(config, "lateral_avoidance_radius")
+    forward_lookahead = _teacher_float(config, "forward_lookahead")
     for obstacle_position in np.asarray(obstacle_positions, dtype=np.float32):
         delta = np.asarray(drone_position - obstacle_position, dtype=np.float32)
         distance = float(np.linalg.norm(delta))
@@ -59,7 +66,38 @@ def heuristic_teacher_action(
             continue
         repulsion += delta / max(distance * distance, 1e-3)
 
-    steering = goal_direction + repulsion_gain * repulsion
+        if lateral_avoidance_gain <= 0.0 or lateral_avoidance_radius <= 0.0 or forward_lookahead <= 0.0:
+            continue
+
+        obstacle_vector = np.asarray(obstacle_position - drone_position, dtype=np.float32)
+        forward_distance = float(np.dot(obstacle_vector, goal_direction))
+        if forward_distance <= 0.0 or forward_distance >= forward_lookahead:
+            continue
+
+        lateral_vector = obstacle_vector - forward_distance * goal_direction
+        lateral_distance = float(np.linalg.norm(lateral_vector))
+        if lateral_distance >= lateral_avoidance_radius:
+            continue
+
+        if lateral_distance > 1e-6:
+            bypass_direction = -lateral_vector / lateral_distance
+        else:
+            reference_axis = np.asarray([0.0, 0.0, 1.0], dtype=np.float32)
+            if abs(float(np.dot(goal_direction, reference_axis))) > 0.9:
+                reference_axis = np.asarray([0.0, 1.0, 0.0], dtype=np.float32)
+            bypass_direction = np.cross(goal_direction, reference_axis)
+            bypass_norm = float(np.linalg.norm(bypass_direction))
+            if bypass_norm <= 1e-6:
+                reference_axis = np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
+                bypass_direction = np.cross(goal_direction, reference_axis)
+                bypass_norm = float(np.linalg.norm(bypass_direction))
+            bypass_direction = bypass_direction / max(bypass_norm, 1e-6)
+
+        forward_factor = 1.0 - forward_distance / max(forward_lookahead, 1e-6)
+        lateral_factor = 1.0 - lateral_distance / max(lateral_avoidance_radius, 1e-6)
+        lateral_avoidance += bypass_direction * max(forward_factor, 0.0) * max(lateral_factor, 0.0)
+
+    steering = goal_direction + repulsion_gain * repulsion + lateral_avoidance_gain * lateral_avoidance
     steering_norm = float(np.linalg.norm(steering))
     if steering_norm > 1e-6:
         steering = steering / steering_norm

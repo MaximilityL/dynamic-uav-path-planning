@@ -67,3 +67,38 @@ def test_plot_training_history_generates_figure(tmp_path: Path) -> None:
     output_path = plot_training_history(history_path=history_path, output_dir=tmp_path / "plots")
     assert output_path.exists()
     assert output_path.suffix == ".png"
+
+
+def test_plot_training_report_marks_stage_regression(tmp_path: Path) -> None:
+    """The training report should flag when a stage is solved and then forgotten."""
+    history_path = tmp_path / "history.jsonl"
+    for episode in range(1, 5):
+        append_jsonl(
+            history_path,
+            {
+                "episode": episode,
+                "stage_name": "bridge_crossing_commit",
+                "episode_return": float(episode),
+                "success": 1.0 if episode >= 2 else 0.0,
+                "collision": 0.0,
+                "min_clearance": 0.4,
+            },
+        )
+
+    eval_history_path = tmp_path / "eval_history.jsonl"
+    for train_episode, success_rate in [(2, 0.9), (3, 0.6), (4, 0.2)]:
+        append_jsonl(
+            eval_history_path,
+            {
+                "train_episode": train_episode,
+                "stage_name": "bridge_crossing_commit",
+                "success_rate": success_rate,
+                "collision_rate": 0.0,
+                "avg_episode_return": float(train_episode),
+                "avg_min_clearance": 0.3,
+            },
+        )
+
+    plot_training_history(history_path=history_path, output_dir=tmp_path / "plots")
+    report = json.loads((tmp_path / "plots" / "training_report.json").read_text(encoding="utf-8"))
+    assert report["stage_report"][0]["status"] == "regressed_after_solving"

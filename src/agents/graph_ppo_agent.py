@@ -57,6 +57,8 @@ class GraphPPOAgent:
         self.ppo_epochs = int(ppo_epochs)
         self.mini_batch_size = int(mini_batch_size)
         self.max_grad_norm = float(max_grad_norm)
+        self._default_actor_lr = float(lr_actor)
+        self._default_critic_lr = float(lr_critic)
 
         self.model = GraphActorCritic(
             encoder_type=encoder_type,
@@ -71,18 +73,58 @@ class GraphPPOAgent:
             action_high=torch.as_tensor(action_high, dtype=torch.float32),
             action_std_init=action_std_init,
         ).to(self.device)
-
-        actor_parameters = list(self.model.encoder.parameters()) + list(self.model.policy_head.parameters()) + [self.model.log_std]
-        critic_parameters = list(self.model.value_head.parameters())
-        self.optimizer = torch.optim.Adam(
-            [
-                {"params": actor_parameters, "lr": lr_actor},
-                {"params": critic_parameters, "lr": lr_critic},
-            ]
-        )
+        self.optimizer = self._build_optimizer(actor_lr=self._default_actor_lr, critic_lr=self._default_critic_lr)
 
         self._episode_buffer = EpisodeBuffer()
         self._rollout_buffer = RolloutBuffer()
+
+    def _build_optimizer(self, *, actor_lr: float, critic_lr: float) -> torch.optim.Adam:
+        """Create a fresh optimizer for the current model parameters."""
+        actor_parameters = list(self.model.encoder.parameters()) + list(self.model.policy_head.parameters()) + [self.model.log_std]
+        critic_parameters = list(self.model.value_head.parameters())
+        return torch.optim.Adam(
+            [
+                {"params": actor_parameters, "lr": float(actor_lr)},
+                {"params": critic_parameters, "lr": float(critic_lr)},
+            ]
+        )
+
+    def learning_rates(self) -> Dict[str, float]:
+        """Return the actor/critic learning rates currently in use."""
+        return {
+            "actor": float(self.optimizer.param_groups[0]["lr"]),
+            "critic": float(self.optimizer.param_groups[1]["lr"]),
+        }
+
+    def set_learning_rates(self, *, actor_lr: float | None = None, critic_lr: float | None = None) -> Dict[str, float]:
+        """Update the optimizer learning rates in place."""
+        current = self.learning_rates()
+        self.optimizer.param_groups[0]["lr"] = float(current["actor"] if actor_lr is None else actor_lr)
+        self.optimizer.param_groups[1]["lr"] = float(current["critic"] if critic_lr is None else critic_lr)
+        return self.learning_rates()
+
+    def scale_learning_rates(self, multiplier: float) -> Dict[str, float]:
+        """Scale the actor and critic learning rates together."""
+        factor = float(multiplier)
+        current = self.learning_rates()
+        return self.set_learning_rates(
+            actor_lr=current["actor"] * factor,
+            critic_lr=current["critic"] * factor,
+        )
+
+    def reset_optimizer(self, *, actor_lr: float | None = None, critic_lr: float | None = None) -> Dict[str, float]:
+        """Discard optimizer momentum/state while keeping the current model weights."""
+        current = self.learning_rates()
+        self.optimizer = self._build_optimizer(
+            actor_lr=current["actor"] if actor_lr is None else actor_lr,
+            critic_lr=current["critic"] if critic_lr is None else critic_lr,
+        )
+        return self.learning_rates()
+
+    def clear_rollout_buffers(self) -> None:
+        """Drop any partially collected rollout data."""
+        self._episode_buffer.clear()
+        self._rollout_buffer.clear()
 
     def select_action(self, observation: GraphObservation, deterministic: bool = False) -> tuple[np.ndarray, Dict[str, float]]:
         """Choose an action and return rollout metadata."""
@@ -221,14 +263,23 @@ class GraphPPOAgent:
             {
                 "model_state": self.model.state_dict(),
                 "optimizer_state": self.optimizer.state_dict(),
+                "scheduler_state": None,
                 "metadata": metadata or {},
             },
             path,
         )
         return path
 
-    def load(self, path: str | Path) -> Dict[str, object]:
-        """Restore the policy and optimizer state."""
+    def load(
+        self,
+        path: str | Path,
+        *,
+        load_optimizer_state: bool = True,
+        load_scheduler_state: bool = True,
+        reset_optimizer_if_skipped: bool = False,
+    ) -> Dict[str, object]:
+        """Restore the policy and optionally the optimizer state."""
+        del load_scheduler_state
         payload = torch.load(Path(path), map_location=self.device)
         try:
             self.model.load_state_dict(payload["model_state"])
@@ -239,6 +290,8 @@ class GraphPPOAgent:
                 f"Original error:\n{exc}"
             ) from exc
         optimizer_state = payload.get("optimizer_state")
-        if optimizer_state is not None:
+        if load_optimizer_state and optimizer_state is not None:
             self.optimizer.load_state_dict(optimizer_state)
+        elif reset_optimizer_if_skipped:
+            self.reset_optimizer()
         return payload.get("metadata", {})

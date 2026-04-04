@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import shutil
 from time import perf_counter
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -35,10 +36,17 @@ def _reset_training_artifacts(layout: Dict[str, Path]) -> None:
         layout["train"] / "summary.json",
         layout["train"] / "best_eval_summary.json",
         layout["train"] / "latest_eval_summary.json",
+        layout["train"] / "stage_best_evaluations.json",
+        layout["train"] / "stage_regression_events.jsonl",
+        layout["checkpoints"] / "best_model.pth",
+        layout["checkpoints"] / "last_model.pth",
     )
     for stale_file in layout["train_evaluations"].glob("*"):
         if stale_file.is_file():
             stale_file.unlink()
+    stage_checkpoint_dir = layout["checkpoints"] / "stages"
+    if stage_checkpoint_dir.exists():
+        shutil.rmtree(stage_checkpoint_dir)
 
 
 def _checkpoint_score(summary: Dict[str, float], stage_index: int = 0) -> tuple[float, float, float, float]:
@@ -54,6 +62,11 @@ def _checkpoint_score(summary: Dict[str, float], stage_index: int = 0) -> tuple[
 def _curriculum_stage_name(stage: Dict[str, object], stage_index: int) -> str:
     """Return a stable human-readable stage name."""
     return str(stage.get("name", f"stage_{stage_index + 1}"))
+
+
+def _stage_directory_name(stage_name: str) -> str:
+    """Convert a stage name into a filesystem-safe directory slug."""
+    return stage_name.replace("/", "_").replace("\\", "_").replace(" ", "_")
 
 
 def _apply_component_overrides(component: object, overrides: Dict[str, object]) -> None:
@@ -122,6 +135,164 @@ def _emit_progress(
     """Send a progress event when the caller asked for one."""
     if progress_callback is not None:
         progress_callback(payload)
+
+
+def _resolve_resume_settings(
+    config: Config,
+    *,
+    resume: Optional[str],
+    resume_overrides: Optional[Dict[str, object]],
+) -> Dict[str, object]:
+    """Merge resume settings from config and CLI-style overrides."""
+    settings: Dict[str, object] = {
+        "checkpoint_path": None,
+        "load_optimizer_state": True,
+        "load_scheduler_state": True,
+        "restore_curriculum_progress": False,
+    }
+    settings.update(dict(config.training.resume or {}))
+    if resume is not None:
+        settings["checkpoint_path"] = resume
+    if resume_overrides:
+        for key, value in resume_overrides.items():
+            if value is not None:
+                settings[key] = value
+    settings["checkpoint_path"] = settings.get("checkpoint_path")
+    settings["load_optimizer_state"] = bool(settings.get("load_optimizer_state", True))
+    settings["load_scheduler_state"] = bool(settings.get("load_scheduler_state", True))
+    settings["restore_curriculum_progress"] = bool(settings.get("restore_curriculum_progress", False))
+    return settings
+
+
+def _resolve_restored_stage(
+    curriculum: List[Dict[str, object]],
+    metadata: Dict[str, object],
+) -> tuple[int, int] | None:
+    """Resolve a saved curriculum stage from checkpoint metadata."""
+    if not curriculum:
+        return None
+
+    saved_stage_name = metadata.get("stage_name")
+    if saved_stage_name is not None:
+        for stage_index, stage in enumerate(curriculum):
+            if _curriculum_stage_name(stage, stage_index) == str(saved_stage_name):
+                saved_stage_episode = metadata.get("stage_episode")
+                if saved_stage_episode is None:
+                    saved_stage_episode = dict(metadata.get("evaluation", {}) or {}).get("stage_episode", 1)
+                return stage_index, max(int(saved_stage_episode), 1)
+
+    saved_stage_index = metadata.get("stage_index")
+    if saved_stage_index is None:
+        return None
+
+    stage_index = int(saved_stage_index)
+    if stage_index < 0 or stage_index >= len(curriculum):
+        return None
+    saved_stage_episode = metadata.get("stage_episode")
+    if saved_stage_episode is None:
+        saved_stage_episode = dict(metadata.get("evaluation", {}) or {}).get("stage_episode", 1)
+    return stage_index, max(int(saved_stage_episode), 1)
+
+
+def _regression_protection_settings(config: Config) -> Dict[str, object]:
+    """Return normalized stage-regression settings."""
+    settings: Dict[str, object] = {
+        "enabled": False,
+        "activate_after_success_rate": 0.7,
+        "absolute_drop_threshold": 0.25,
+        "relative_drop_fraction": 0.4,
+        "consecutive_bad_evals": 2,
+        "rollback_on_regression": True,
+        "rollback_max_per_stage": 1,
+        "lr_multiplier_after_rollback": 1.0,
+    }
+    settings.update(dict(config.training.stage_regression_protection or {}))
+    settings["enabled"] = bool(settings.get("enabled", False))
+    settings["activate_after_success_rate"] = float(settings.get("activate_after_success_rate", 0.7))
+    settings["absolute_drop_threshold"] = float(settings.get("absolute_drop_threshold", 0.25))
+    settings["relative_drop_fraction"] = float(settings.get("relative_drop_fraction", 0.4))
+    settings["consecutive_bad_evals"] = max(int(settings.get("consecutive_bad_evals", 2)), 1)
+    settings["rollback_on_regression"] = bool(settings.get("rollback_on_regression", True))
+    settings["rollback_max_per_stage"] = max(int(settings.get("rollback_max_per_stage", 1)), 0)
+    settings["lr_multiplier_after_rollback"] = float(settings.get("lr_multiplier_after_rollback", 1.0))
+    return settings
+
+
+def _stage_tracking_state(layout: Dict[str, Path], *, stage_index: int, stage_name: str) -> Dict[str, object]:
+    """Create per-stage bookkeeping for best checkpoints and rollback state."""
+    stage_dir = layout["checkpoints"] / "stages" / _stage_directory_name(stage_name)
+    return {
+        "stage_index": int(stage_index),
+        "stage_name": str(stage_name),
+        "best_eval_score": (-float("inf"), -float("inf"), -float("inf"), -float("inf")),
+        "best_eval": None,
+        "best_train_episode": 0,
+        "best_stage_episode": 0,
+        "best_eval_index": 0,
+        "num_evaluations": 0,
+        "bad_eval_streak": 0,
+        "rollback_count": 0,
+        "best_model_path": stage_dir / "best_model.pth",
+        "best_eval_summary_path": stage_dir / "best_eval_summary.json",
+    }
+
+
+def _stage_regression_signal(
+    *,
+    eval_summary: Dict[str, float],
+    stage_state: Dict[str, object],
+    protection: Dict[str, object],
+) -> Dict[str, float]:
+    """Check whether the current stage evaluation is a sharp drop from the stage best."""
+    best_eval = stage_state.get("best_eval")
+    if best_eval is None or not bool(protection.get("enabled", False)):
+        return {"active": 0.0, "bad": 0.0, "best_success_rate": 0.0, "absolute_drop": 0.0, "relative_drop": 0.0}
+
+    best_success = float(dict(best_eval).get("success_rate", 0.0))
+    activate_after = float(protection.get("activate_after_success_rate", 0.7))
+    # Float32 success rates can land just below the threshold (for example 0.699999988 for 0.7).
+    if best_success + 1e-6 < activate_after:
+        return {
+            "active": 0.0,
+            "bad": 0.0,
+            "best_success_rate": best_success,
+            "absolute_drop": 0.0,
+            "relative_drop": 0.0,
+        }
+
+    current_success = float(eval_summary.get("success_rate", 0.0))
+    absolute_drop = max(best_success - current_success, 0.0)
+    relative_drop = absolute_drop / max(best_success, 1e-6)
+    bad_eval = (
+        absolute_drop >= float(protection.get("absolute_drop_threshold", 0.25))
+        and relative_drop >= float(protection.get("relative_drop_fraction", 0.4))
+    )
+    return {
+        "active": 1.0,
+        "bad": float(bad_eval),
+        "best_success_rate": best_success,
+        "absolute_drop": absolute_drop,
+        "relative_drop": relative_drop,
+    }
+
+
+def _serialize_stage_best(stage_state: Dict[str, object]) -> Dict[str, object]:
+    """Convert internal stage tracking state into a JSON-friendly summary."""
+    best_eval = dict(stage_state.get("best_eval") or {})
+    return {
+        "stage_index": int(stage_state["stage_index"]),
+        "stage_name": str(stage_state["stage_name"]),
+        "num_evaluations": int(stage_state.get("num_evaluations", 0)),
+        "best_success_rate": float(best_eval.get("success_rate", 0.0)),
+        "best_collision_rate": float(best_eval.get("collision_rate", 0.0)),
+        "best_avg_return": float(best_eval.get("avg_episode_return", 0.0)),
+        "best_avg_episode_return": float(best_eval.get("avg_episode_return", 0.0)),
+        "best_train_episode": int(stage_state.get("best_train_episode", 0)),
+        "best_stage_episode": int(stage_state.get("best_stage_episode", 0)),
+        "best_eval_index": int(stage_state.get("best_eval_index", 0)),
+        "rollback_count": int(stage_state.get("rollback_count", 0)),
+        "best_model_path": str(stage_state["best_model_path"]),
+    }
 
 
 def _evaluate_current_policy(
@@ -229,6 +400,7 @@ def train_agent(
     resume: Optional[str] = None,
     num_episodes: Optional[int] = None,
     progress_callback: Optional[Callable[[Dict[str, object]], None]] = None,
+    resume_overrides: Optional[Dict[str, object]] = None,
 ) -> Dict[str, float]:
     """Train the graph PPO baseline for a configurable number of episodes."""
     set_global_seeds(config.environment.seed)
@@ -248,14 +420,48 @@ def train_agent(
     stage_start_episode = 1
     stage_success_streak = 0
     stage_transitions: List[Dict[str, object]] = []
+    stage_regression_events: List[Dict[str, object]] = []
+    regression_protection = _regression_protection_settings(config)
+    stage_states: Dict[str, Dict[str, object]] = {}
+    if curriculum:
+        for stage_index, stage in enumerate(curriculum):
+            stage_name = _curriculum_stage_name(stage, stage_index)
+            stage_states[stage_name] = _stage_tracking_state(layout, stage_index=stage_index, stage_name=stage_name)
+    else:
+        stage_states["main"] = _stage_tracking_state(layout, stage_index=0, stage_name="main")
 
     env = create_environment(current_stage_config, gui=False, seed=current_stage_config.environment.seed)
     agent = create_agent(config, env)
 
     best_model_path = layout["checkpoints"] / "best_model.pth"
     last_model_path = layout["checkpoints"] / "last_model.pth"
-    if resume:
-        agent.load(resume)
+    resume_settings = _resolve_resume_settings(
+        config,
+        resume=resume,
+        resume_overrides=resume_overrides,
+    )
+    resume_path = resume_settings.get("checkpoint_path")
+    resumed_metadata: Dict[str, object] = {}
+    if resume_path:
+        resumed_metadata = agent.load(
+            str(resume_path),
+            load_optimizer_state=bool(resume_settings["load_optimizer_state"]),
+            load_scheduler_state=bool(resume_settings["load_scheduler_state"]),
+            reset_optimizer_if_skipped=not bool(resume_settings["load_optimizer_state"]),
+        )
+        agent.clear_rollout_buffers()
+        if bool(resume_settings["restore_curriculum_progress"]):
+            restored_stage = _resolve_restored_stage(curriculum, resumed_metadata)
+            if restored_stage is not None:
+                restored_stage_index, restored_stage_episode = restored_stage
+                current_stage_index = restored_stage_index
+                current_stage = curriculum[current_stage_index]
+                current_stage_name = _curriculum_stage_name(current_stage, current_stage_index)
+                current_stage_config = _stage_config(config, current_stage)
+                stage_start_episode = 2 - restored_stage_episode
+                stage_success_streak = 0
+                env.close()
+                env = create_environment(current_stage_config, gui=False, seed=current_stage_config.environment.seed)
 
     history: List[Dict[str, object]] = []
     evaluation_history: List[Dict[str, float]] = []
@@ -277,6 +483,19 @@ def train_agent(
             "config_name": config.name,
         },
     )
+    if resume_path:
+        _emit_progress(
+            progress_callback,
+            {
+                "event": "resume",
+                "checkpoint_path": str(resume_path),
+                "load_optimizer_state": float(bool(resume_settings["load_optimizer_state"])),
+                "load_scheduler_state": float(bool(resume_settings["load_scheduler_state"])),
+                "restore_curriculum_progress": float(bool(resume_settings["restore_curriculum_progress"])),
+                "restored_stage_index": current_stage_index,
+                "restored_stage_name": current_stage_name,
+            },
+        )
 
     try:
         for episode_idx in range(episode_budget):
@@ -356,18 +575,151 @@ def train_agent(
                     )
                     stage_success_streak = stage_success_streak + 1 if stage_target_hit else 0
                     required_consecutive_evals = int(current_stage.get("required_consecutive_evals", 1))
+                stage_state = stage_states[current_stage_name]
+                stage_state["num_evaluations"] = int(stage_state.get("num_evaluations", 0)) + 1
+                stage_eval_index = int(stage_state["num_evaluations"])
+                stage_eval_score = _checkpoint_score(eval_summary, current_stage_index)
+                stage_best_updated = stage_eval_score > stage_state["best_eval_score"]
+                if stage_best_updated:
+                    stage_state["best_eval_score"] = stage_eval_score
+                    stage_state["best_eval"] = {
+                        "stage_index": current_stage_index,
+                        "stage_name": current_stage_name,
+                        "train_episode": episode_number,
+                        "stage_episode": stage_episode,
+                        "eval_index": stage_eval_index,
+                        **eval_summary,
+                    }
+                    stage_state["best_train_episode"] = int(episode_number)
+                    stage_state["best_stage_episode"] = int(stage_episode)
+                    stage_state["best_eval_index"] = int(stage_eval_index)
+                    stage_state["bad_eval_streak"] = 0
+                    agent.save(
+                        stage_state["best_model_path"],
+                        metadata={
+                            "episode": episode_number,
+                            "stage_index": current_stage_index,
+                            "stage_name": current_stage_name,
+                            "stage_episode": stage_episode,
+                            "stage_eval_index": stage_eval_index,
+                            "evaluation": {
+                                "stage_index": current_stage_index,
+                                "stage_name": current_stage_name,
+                                "train_episode": episode_number,
+                                "stage_episode": stage_episode,
+                                "eval_index": stage_eval_index,
+                                **eval_summary,
+                            },
+                            "recent_training_summary": recent_summary,
+                            "config_name": config.name,
+                        },
+                    )
+                    save_json(stage_state["best_eval_summary_path"], dict(stage_state["best_eval"]))
+
+                regression_signal = _stage_regression_signal(
+                    eval_summary=eval_summary,
+                    stage_state=stage_state,
+                    protection=regression_protection,
+                )
+                if stage_best_updated:
+                    stage_state["bad_eval_streak"] = 0
+                elif bool(regression_signal["bad"]):
+                    stage_state["bad_eval_streak"] = int(stage_state.get("bad_eval_streak", 0)) + 1
+                else:
+                    stage_state["bad_eval_streak"] = 0
+
+                regression_detected = False
+                rollback_applied = False
+                best_eval_for_stage = dict(stage_state.get("best_eval") or {})
+                if (
+                    bool(regression_signal["bad"])
+                    and int(stage_state["bad_eval_streak"]) >= int(regression_protection["consecutive_bad_evals"])
+                ):
+                    regression_detected = True
+                    detection_event = {
+                        "event": "stage_regression_detected",
+                        "episode": episode_number,
+                        "stage_index": current_stage_index,
+                        "stage_name": current_stage_name,
+                        "stage_episode": stage_episode,
+                        "stage_eval_index": stage_eval_index,
+                        "current_success_rate": float(eval_summary.get("success_rate", 0.0)),
+                        "best_success_rate": float(best_eval_for_stage.get("success_rate", 0.0)),
+                        "absolute_drop": float(regression_signal["absolute_drop"]),
+                        "relative_drop": float(regression_signal["relative_drop"]),
+                        "bad_eval_streak": int(stage_state["bad_eval_streak"]),
+                        "rollback_count": int(stage_state["rollback_count"]),
+                    }
+                    stage_regression_events.append(detection_event)
+                    append_jsonl(layout["train"] / "stage_regression_events.jsonl", detection_event)
+                    _emit_progress(progress_callback, detection_event)
+
+                    can_rollback = (
+                        bool(regression_protection["rollback_on_regression"])
+                        and int(stage_state["rollback_count"]) < int(regression_protection["rollback_max_per_stage"])
+                        and Path(stage_state["best_model_path"]).exists()
+                    )
+                    if can_rollback:
+                        agent.clear_rollout_buffers()
+                        agent.load(
+                            stage_state["best_model_path"],
+                            load_optimizer_state=False,
+                            load_scheduler_state=False,
+                            reset_optimizer_if_skipped=True,
+                        )
+                        lr_multiplier = float(regression_protection["lr_multiplier_after_rollback"])
+                        if lr_multiplier > 0.0 and lr_multiplier != 1.0:
+                            learning_rates = agent.scale_learning_rates(lr_multiplier)
+                        else:
+                            learning_rates = agent.learning_rates()
+                        stage_state["rollback_count"] = int(stage_state.get("rollback_count", 0)) + 1
+                        stage_state["bad_eval_streak"] = 0
+                        stage_success_streak = 0
+                        rollback_applied = True
+                        rollback_event = {
+                            "event": "stage_rollback",
+                            "episode": episode_number,
+                            "stage_index": current_stage_index,
+                            "stage_name": current_stage_name,
+                            "stage_episode": stage_episode,
+                            "stage_eval_index": stage_eval_index,
+                            "rollback_count": int(stage_state["rollback_count"]),
+                            "restored_checkpoint": str(stage_state["best_model_path"]),
+                            "actor_lr": float(learning_rates["actor"]),
+                            "critic_lr": float(learning_rates["critic"]),
+                        }
+                        stage_regression_events.append(rollback_event)
+                        append_jsonl(layout["train"] / "stage_regression_events.jsonl", rollback_event)
+                        _emit_progress(progress_callback, rollback_event)
+
                 eval_record = {
                     "train_episode": episode_number,
                     "stage_index": current_stage_index,
                     "stage_name": current_stage_name,
                     "stage_episode": stage_episode,
+                    "stage_eval_index": stage_eval_index,
                     "stage_target_hit": float(stage_target_hit),
                     "stage_success_streak": int(stage_success_streak),
+                    "stage_best_success_rate": float(best_eval_for_stage.get("success_rate", 0.0)),
+                    "stage_best_collision_rate": float(best_eval_for_stage.get("collision_rate", 0.0)),
+                    "stage_best_avg_return": float(best_eval_for_stage.get("avg_episode_return", 0.0)),
+                    "stage_bad_eval_streak": int(stage_state["bad_eval_streak"]),
+                    "stage_regression_active": float(regression_signal["active"]),
+                    "stage_regression_bad_eval": float(regression_signal["bad"]),
+                    "stage_regression_absolute_drop": float(regression_signal["absolute_drop"]),
+                    "stage_regression_relative_drop": float(regression_signal["relative_drop"]),
+                    "stage_regression_detected": float(regression_detected),
+                    "stage_rollback_applied": float(rollback_applied),
                     **eval_summary,
                 }
                 evaluation_history.append(eval_record)
                 latest_eval_summary = eval_record
                 append_jsonl(layout["train"] / "eval_history.jsonl", eval_record)
+                save_json(layout["train"] / "latest_eval_summary.json", latest_eval_summary)
+                save_json(
+                    layout["train"] / "stage_best_evaluations.json",
+                    {stage_name: _serialize_stage_best(state) for stage_name, state in stage_states.items()},
+                )
                 _emit_progress(
                     progress_callback,
                     {
@@ -439,6 +791,7 @@ def train_agent(
                         current_stage_config = _stage_config(config, current_stage)
                         stage_start_episode = episode_number + 1
                         stage_success_streak = 0
+                        agent.clear_rollout_buffers()
                         env.close()
                         env = create_environment(
                             current_stage_config,
@@ -455,6 +808,7 @@ def train_agent(
                         "episode": episode_number,
                         "stage_index": current_stage_index,
                         "stage_name": current_stage_name,
+                        "stage_episode": stage_episode,
                         "latest_evaluation": latest_eval_summary,
                         "recent_training_summary": recent_summary,
                         "config_name": config.name,
@@ -483,7 +837,20 @@ def train_agent(
     summary["completed_stage_index"] = int(current_stage_index)
     summary["completed_stage_name"] = str(current_stage_name)
     summary["stopped_early"] = float(episodes_completed < episode_budget)
+    summary["stage_regression_event_count"] = int(
+        sum(1 for event in stage_regression_events if str(event.get("event")) == "stage_regression_detected")
+    )
+    summary["stage_rollback_count"] = int(sum(1 for event in stage_regression_events if str(event.get("event")) == "stage_rollback"))
+    if resume_path:
+        summary["resume_checkpoint_path"] = str(resume_path)
+        summary["resume_loaded_optimizer_state"] = float(bool(resume_settings["load_optimizer_state"]))
+        summary["resume_restored_curriculum_progress"] = float(bool(resume_settings["restore_curriculum_progress"]))
+    stage_best_evaluations = {
+        stage_name: _serialize_stage_best(stage_state) for stage_name, stage_state in stage_states.items()
+    }
     total_elapsed_seconds = perf_counter() - start_time
+
+    save_json(layout["train"] / "stage_best_evaluations.json", stage_best_evaluations)
 
     save_json(
         layout["train"] / "summary.json",
@@ -492,7 +859,9 @@ def train_agent(
             "best_evaluation": best_eval_summary,
             "latest_evaluation": latest_eval_summary,
             "last_update_metrics": last_update_metrics,
+            "stage_best_evaluations": stage_best_evaluations,
             "stage_transitions": stage_transitions,
+            "stage_regression_events": stage_regression_events,
         },
     )
     _emit_progress(

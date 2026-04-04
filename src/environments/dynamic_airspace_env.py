@@ -66,6 +66,7 @@ class DynamicAirspaceEnv(BaseEnvironment):
         obstacle_speed_range: Tuple[float, float] = (0.15, 0.45),
         auto_time_budget_steps_per_meter: float = 0.0,
         auto_time_budget_padding: int = 0,
+        auto_time_budget_max_steps: int = 0,
         scenario_config: Optional[Dict[str, object]] = None,
         teacher_config: Optional[Dict[str, object]] = None,
         reward_weights: Optional[Dict[str, float]] = None,
@@ -90,6 +91,7 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self.configured_max_episode_steps = int(max_episode_steps)
         self.auto_time_budget_steps_per_meter = float(auto_time_budget_steps_per_meter)
         self.auto_time_budget_padding = int(auto_time_budget_padding)
+        self.auto_time_budget_max_steps = int(auto_time_budget_max_steps)
         self.scenario_config = dict(scenario_config or {})
         self.teacher_config = dict(teacher_config or {})
         self.reward_weights = RewardWeights(**(reward_weights or {}))
@@ -120,6 +122,10 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self.obstacle_history: List[np.ndarray] = []
         self.action_history: List[np.ndarray] = []
         self.reward_history: List[float] = []
+        self.distance_to_goal_history: List[float] = []
+        self.best_progress_ratio = 0.0
+        self.best_goal_proximity_score = 0.0
+        self.progress_milestones_hit: set[int] = set()
         self._debug_body_ids: List[int] = []
 
         self._set_seed(seed)
@@ -292,7 +298,115 @@ class DynamicAirspaceEnv(BaseEnvironment):
             return self.configured_max_episode_steps
 
         scaled_budget = int(np.ceil(start_to_goal_distance * self.auto_time_budget_steps_per_meter))
-        return max(self.configured_max_episode_steps, scaled_budget + self.auto_time_budget_padding)
+        resolved_budget = max(self.configured_max_episode_steps, scaled_budget + self.auto_time_budget_padding)
+        if self.auto_time_budget_max_steps > 0:
+            resolved_budget = min(resolved_budget, self.auto_time_budget_max_steps)
+        return max(resolved_budget, 1)
+
+    def _stall_penalty(self, *, distance_to_goal: float, goal_now: bool) -> float:
+        """Penalize late-episode plateaus that fail to make enough net progress."""
+        if goal_now:
+            return 0.0
+
+        stall_weight = float(self.reward_weights.stall)
+        stall_window = max(int(self.reward_weights.stall_window_steps), 0)
+        stall_grace_steps = max(int(self.reward_weights.stall_grace_steps), 0)
+        stall_progress_threshold = float(self.reward_weights.stall_progress_threshold)
+        stall_remaining_ratio_threshold = float(self.reward_weights.stall_remaining_ratio_threshold)
+        if stall_weight == 0.0 or stall_window <= 0 or stall_progress_threshold <= 0.0:
+            return 0.0
+        if self.current_step <= max(stall_window, stall_grace_steps):
+            return 0.0
+        if len(self.distance_to_goal_history) <= stall_window:
+            return 0.0
+
+        remaining_ratio = float(distance_to_goal / max(self.start_to_goal_distance, 1e-6))
+        if remaining_ratio < stall_remaining_ratio_threshold:
+            return 0.0
+
+        window_start_distance = float(self.distance_to_goal_history[-(stall_window + 1)])
+        window_progress = window_start_distance - distance_to_goal
+        if window_progress >= stall_progress_threshold:
+            return 0.0
+
+        shortfall_ratio = float(
+            np.clip((stall_progress_threshold - window_progress) / max(stall_progress_threshold, 1e-6), 0.0, 1.5)
+        )
+        return stall_weight * shortfall_ratio
+
+    def _commit_bonus_allowed(self, *, clearance_margin: float) -> bool:
+        """Allow forward-commit bonuses only when the state is above a minimum safety margin."""
+        minimum_clearance = float(getattr(self.reward_weights, "commit_bonus_min_clearance", 0.0))
+        return float(clearance_margin) >= minimum_clearance
+
+    def _progress_milestone_bonus(self, *, distance_to_goal: float, clearance_margin: float) -> float:
+        """Return one-time bonuses when the episode crosses configured progress thresholds."""
+        if not self._commit_bonus_allowed(clearance_margin=clearance_margin):
+            return 0.0
+        threshold_values = getattr(self.reward_weights, "progress_milestone_thresholds", ())
+        if isinstance(threshold_values, (int, float)):
+            thresholds = [float(threshold_values)]
+        else:
+            thresholds = [float(value) for value in threshold_values]
+        if not thresholds:
+            return 0.0
+
+        progress_ratio = float(
+            np.clip(1.0 - distance_to_goal / max(self.start_to_goal_distance, 1e-6), 0.0, 1.2)
+        )
+        bonus_weights = list(getattr(self.reward_weights, "progress_milestone_bonus_weights", ()) or ())
+        default_bonus = float(getattr(self.reward_weights, "progress_milestone_bonus", 0.0))
+        total_bonus = 0.0
+        for index, threshold in enumerate(sorted(thresholds)):
+            threshold = float(np.clip(threshold, 0.0, 1.0))
+            if index in self.progress_milestones_hit or progress_ratio < threshold:
+                continue
+            bonus = float(bonus_weights[index]) if index < len(bonus_weights) else default_bonus
+            if bonus == 0.0:
+                self.progress_milestones_hit.add(index)
+                continue
+            total_bonus += bonus
+            self.progress_milestones_hit.add(index)
+        return total_bonus
+
+    def _frontier_progress_bonus(self, *, distance_to_goal: float, clearance_margin: float) -> float:
+        """Reward the episode for extending its furthest committed progress toward the goal."""
+        frontier_weight = float(getattr(self.reward_weights, "frontier_progress", 0.0))
+        if frontier_weight == 0.0:
+            return 0.0
+        if not self._commit_bonus_allowed(clearance_margin=clearance_margin):
+            return 0.0
+
+        progress_ratio = float(
+            np.clip(1.0 - distance_to_goal / max(self.start_to_goal_distance, 1e-6), 0.0, 1.2)
+        )
+        frontier_delta = max(progress_ratio - float(self.best_progress_ratio), 0.0)
+        self.best_progress_ratio = max(float(self.best_progress_ratio), progress_ratio)
+        if frontier_delta <= 0.0:
+            return 0.0
+        return frontier_weight * frontier_delta
+
+    def _goal_proximity_bonus(self, *, distance_to_goal: float, clearance_margin: float) -> float:
+        """Reward improved near-goal closeness without paying repeatedly for hovering."""
+        proximity_weight = float(getattr(self.reward_weights, "goal_proximity_bonus", 0.0))
+        proximity_radius = float(getattr(self.reward_weights, "goal_proximity_radius", 0.0))
+        if proximity_weight == 0.0 or proximity_radius <= 0.0:
+            return 0.0
+        if not self._commit_bonus_allowed(clearance_margin=clearance_margin):
+            return 0.0
+
+        proximity_score = 1.0 - float(distance_to_goal) / max(proximity_radius, 1e-6)
+        proximity_score = float(np.clip(proximity_score, 0.0, 1.0))
+        if proximity_score <= 0.0:
+            return 0.0
+
+        proximity_power = float(max(getattr(self.reward_weights, "goal_proximity_power", 1.0), 1e-6))
+        shaped_score = proximity_score**proximity_power
+        score_delta = max(shaped_score - float(self.best_goal_proximity_score), 0.0)
+        self.best_goal_proximity_score = max(float(self.best_goal_proximity_score), shaped_score)
+        if score_delta <= 0.0:
+            return 0.0
+        return proximity_weight * score_delta
 
     def _teacher_action(self, drone_position: np.ndarray) -> np.ndarray:
         """Return the heuristic teacher action for the current state."""
@@ -382,6 +496,10 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self.start_to_goal_distance = float(np.linalg.norm(self.goal_position - drone_position))
         self.max_episode_steps = self._resolve_episode_step_budget(self.start_to_goal_distance)
         self.prev_distance_to_goal = self.start_to_goal_distance
+        self.distance_to_goal_history = [self.start_to_goal_distance]
+        self.best_progress_ratio = 0.0
+        self.best_goal_proximity_score = 0.0
+        self.progress_milestones_hit = set()
         self.position_history = [drone_position.copy()]
         self.obstacle_history = [self.obstacle_positions.copy()]
         self.action_history = []
@@ -419,6 +537,7 @@ class DynamicAirspaceEnv(BaseEnvironment):
         collision_now = bool(min_obstacle_distance <= safety_distance)
         goal_now = bool(distance_to_goal <= self.goal_tolerance)
         clearance_margin = min_obstacle_distance - safety_distance
+        remaining_ratio = float(distance_to_goal / max(self.start_to_goal_distance, 1e-6))
         reward, reward_components = compute_reward(
             reward_weights=self.reward_weights,
             goal_now=goal_now,
@@ -426,7 +545,25 @@ class DynamicAirspaceEnv(BaseEnvironment):
             progress_delta=progress_delta,
             clearance_margin=clearance_margin,
             action_array=action_array,
+            remaining_distance_ratio=remaining_ratio,
         )
+        self.distance_to_goal_history.append(distance_to_goal)
+        frontier_term = self._frontier_progress_bonus(distance_to_goal=distance_to_goal, clearance_margin=clearance_margin)
+        if frontier_term != 0.0:
+            reward += frontier_term
+            reward_components["frontier_progress"] = frontier_term
+        proximity_term = self._goal_proximity_bonus(distance_to_goal=distance_to_goal, clearance_margin=clearance_margin)
+        if proximity_term != 0.0:
+            reward += proximity_term
+            reward_components["goal_proximity"] = proximity_term
+        milestone_term = self._progress_milestone_bonus(distance_to_goal=distance_to_goal, clearance_margin=clearance_margin)
+        if milestone_term != 0.0:
+            reward += milestone_term
+            reward_components["milestone"] = milestone_term
+        stall_term = self._stall_penalty(distance_to_goal=distance_to_goal, goal_now=goal_now)
+        if stall_term != 0.0:
+            reward += stall_term
+            reward_components["stall"] = stall_term
         teacher_bonus = teacher_alignment_bonus(
             action_array=action_array,
             teacher_action=teacher_action,

@@ -1,6 +1,6 @@
 # Dynamic UAV Path Planning
 
-Version: `1.0.1`
+Version: `1.0.2`
 
 This repository is a research codebase for learning-based UAV path planning in dynamic environments. It focuses on a graph-based observation pipeline, a PyBullet-backed single-UAV environment, and a PPO baseline that is straightforward to extend and evaluate.
 
@@ -97,6 +97,30 @@ python scripts/plot_results.py
 ```
 
 `gym-pybullet-drones` is installed from the upstream GitHub repository because it is not resolved from PyPI in this scaffold setup.
+
+## Curriculum Resume Notes
+
+Curriculum configs can now carry a `training.resume` block:
+
+```yaml
+training:
+  resume:
+    checkpoint_path: "checkpoints/corridor_dash/best_model.pth"
+    load_optimizer_state: false
+    load_scheduler_state: false
+    restore_curriculum_progress: false
+```
+
+You can also override the same behavior from the CLI:
+
+```bash
+python scripts/train.py \
+  --config configs/curriculum_goal_first_v2.yaml \
+  --resume checkpoints/corridor_dash/best_model.pth \
+  --reset-optimizer-on-resume
+```
+
+Per-stage best checkpoints are written under `checkpoints/<run>/stages/<stage_name>/best_model.pth`. When stage regression protection is enabled, those checkpoints are the rollback targets used inside the same stage.
 
 ## Development Workflow
 

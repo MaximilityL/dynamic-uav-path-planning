@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from src.training import loops
@@ -126,3 +127,103 @@ def test_checkpoint_score_prefers_success_over_stage_index() -> None:
     )
 
     assert successful_early > failed_later
+
+
+def test_stage_regression_protection_rolls_back_to_stage_best(tmp_path: Path, monkeypatch) -> None:
+    """A stage that regresses after being solved should restore its own best checkpoint."""
+    config = load_config("configs/default.yaml")
+    config.environment.max_episode_steps = 6
+    config.environment.auto_time_budget_steps_per_meter = 0.0
+    config.environment.num_dynamic_obstacles = 2
+    config.environment.seed = 5
+    config.agent.rollout_episodes = 1
+    config.agent.ppo_epochs = 1
+    config.agent.mini_batch_size = 8
+    config.training.num_episodes = 3
+    config.training.save_interval = 1
+    config.training.eval_interval = 1
+    config.training.eval_episodes = 2
+    config.training.results_dir = str(tmp_path / "results")
+    config.training.log_dir = str(tmp_path / "logs")
+    config.training.checkpoint_dir = str(tmp_path / "checkpoints")
+    config.evaluation.output_dir = str(tmp_path / "results" / "eval")
+    config.evaluation.num_episodes = 2
+    config.visualization.plot_dir = str(tmp_path / "results" / "plots")
+    config.visualization.trajectory_dir = str(tmp_path / "results" / "trajectories")
+    config.training.curriculum = [
+        {
+            "name": "bridge_crossing_easy",
+            "min_stage_episodes": 99,
+            "required_consecutive_evals": 2,
+            "advance_success_rate": 1.1,
+            "advance_collision_rate": 0.0,
+            "environment": {
+                "max_episode_steps": 6,
+                "auto_time_budget_steps_per_meter": 0.0,
+            },
+        }
+    ]
+    config.training.stage_regression_protection = {
+        "enabled": True,
+        "activate_after_success_rate": 0.7,
+        "absolute_drop_threshold": 0.25,
+        "relative_drop_fraction": 0.4,
+        "consecutive_bad_evals": 2,
+        "rollback_on_regression": True,
+        "rollback_max_per_stage": 1,
+        "lr_multiplier_after_rollback": 0.5,
+    }
+
+    eval_summaries = iter(
+        [
+            {"success_rate": 0.8, "collision_rate": 0.0, "avg_episode_return": 50.0},
+            {"success_rate": 0.2, "collision_rate": 0.0, "avg_episode_return": 5.0},
+            {"success_rate": 0.1, "collision_rate": 0.0, "avg_episode_return": 0.0},
+        ]
+    )
+
+    def fake_evaluate_current_policy(**kwargs):
+        summary = next(eval_summaries)
+        summary = dict(summary)
+        summary.setdefault("avg_path_length", 0.0)
+        summary.setdefault("avg_episode_duration", 0.0)
+        summary.setdefault("avg_time_to_goal", 0.0)
+        summary.setdefault("avg_min_obstacle_distance", 0.0)
+        summary.setdefault("avg_min_clearance", 0.0)
+        summary.setdefault("avg_control_effort", 0.0)
+        summary.setdefault("avg_path_efficiency", 0.0)
+        summary.setdefault("avg_steps", 0.0)
+        summary.setdefault("best_episode_return", summary["avg_episode_return"])
+        return [], summary, None
+
+    monkeypatch.setattr(loops, "_evaluate_current_policy", fake_evaluate_current_policy)
+
+    summary = train_agent(config=config)
+    assert summary["stage_regression_event_count"] == 1
+    assert summary["stage_rollback_count"] == 1
+
+    stage_best_path = tmp_path / "checkpoints" / "stages" / "bridge_crossing_easy" / "best_model.pth"
+    assert stage_best_path.exists()
+
+    regression_events = load_jsonl(tmp_path / "results" / "train" / "stage_regression_events.jsonl")
+    assert [event["event"] for event in regression_events] == ["stage_regression_detected", "stage_rollback"]
+
+    stage_best_payload = json.loads((tmp_path / "results" / "train" / "stage_best_evaluations.json").read_text())
+    assert stage_best_payload["bridge_crossing_easy"]["best_success_rate"] == 0.8
+
+
+def test_stage_regression_signal_tolerates_float_rounding_at_activation_threshold() -> None:
+    """Regression protection should still arm when float rounding lands just under the threshold."""
+    signal = loops._stage_regression_signal(
+        eval_summary={"success_rate": 0.1},
+        stage_state={"best_eval": {"success_rate": 0.699999988079071}},
+        protection={
+            "enabled": True,
+            "activate_after_success_rate": 0.7,
+            "absolute_drop_threshold": 0.25,
+            "relative_drop_fraction": 0.4,
+        },
+    )
+
+    assert signal["active"] == 1.0
+    assert signal["bad"] == 1.0
