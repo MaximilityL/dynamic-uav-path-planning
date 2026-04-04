@@ -18,6 +18,8 @@ class RewardWeights:
     clearance: float = 0.5
     effort: float = -0.005
     time: float = -0.01
+    timeout: float = -8.0
+    timeout_distance: float = -20.0
 
 
 def compute_reward(

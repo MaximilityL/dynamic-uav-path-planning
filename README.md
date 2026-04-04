@@ -1,6 +1,6 @@
 # Dynamic UAV Path Planning
 
-Version: `1.0.0`
+Version: `1.0.1`
 
 This repository is a research codebase for learning-based UAV path planning in dynamic environments. It focuses on a graph-based observation pipeline, a PyBullet-backed single-UAV environment, and a PPO baseline that is straightforward to extend and evaluate.
 

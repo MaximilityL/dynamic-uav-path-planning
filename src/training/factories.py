@@ -60,6 +60,10 @@ def create_environment(config: Config, gui: Optional[bool] = None, seed: Optiona
         connect_radius=env_cfg.connect_radius,
         workspace_bounds=tuple(tuple(bound) for bound in env_cfg.workspace_bounds),
         obstacle_speed_range=tuple(env_cfg.obstacle_speed_range),
+        auto_time_budget_steps_per_meter=env_cfg.auto_time_budget_steps_per_meter,
+        auto_time_budget_padding=env_cfg.auto_time_budget_padding,
+        scenario_config=dict(env_cfg.scenario_config),
+        teacher_config=dict(env_cfg.teacher_config),
         reward_weights=dict(env_cfg.reward_weights),
         seed=actual_seed,
     )

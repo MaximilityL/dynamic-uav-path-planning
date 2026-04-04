@@ -1,5 +1,5 @@
 name: "dynamic_uav_path_planning_hard_obstacles"
-version: "1.0.0"
+version: "1.0.1"
 description: "Harder PPO+GNN preset with denser and faster moving obstacles"
 tags: ["uav", "path-planning", "dynamic-airspace", "pybullet", "gnn", "ppo", "hard"]
 

@@ -21,6 +21,7 @@ def main() -> int:
 
     output_path = plot_training_history(history_path=args.history, output_dir=args.output_dir)
     print(f"plot={Path(output_path)}")
+    print(f"report={Path(args.output_dir) / 'training_report.json'}")
     return 0
 
 

@@ -14,6 +14,7 @@ from .base_env import BaseEnvironment
 from .observation import build_dense_graph_observation, minimum_obstacle_distance
 from .reward import RewardWeights, compute_reward
 from .scenario import advance_obstacles, sample_dynamic_obstacles, sample_goal_position, sample_start_position
+from .teacher import heuristic_teacher_action, teacher_alignment_bonus
 
 
 def _as_action_type(value: ActionType | str) -> ActionType:
@@ -63,6 +64,10 @@ class DynamicAirspaceEnv(BaseEnvironment):
             (0.5, 2.5),
         ),
         obstacle_speed_range: Tuple[float, float] = (0.15, 0.45),
+        auto_time_budget_steps_per_meter: float = 0.0,
+        auto_time_budget_padding: int = 0,
+        scenario_config: Optional[Dict[str, object]] = None,
+        teacher_config: Optional[Dict[str, object]] = None,
         reward_weights: Optional[Dict[str, float]] = None,
         seed: Optional[int] = 0,
     ) -> None:
@@ -82,6 +87,11 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self.connect_radius = float(connect_radius)
         self.workspace_bounds = np.asarray(workspace_bounds, dtype=np.float32)
         self.obstacle_speed_range = tuple(float(value) for value in obstacle_speed_range)
+        self.configured_max_episode_steps = int(max_episode_steps)
+        self.auto_time_budget_steps_per_meter = float(auto_time_budget_steps_per_meter)
+        self.auto_time_budget_padding = int(auto_time_budget_padding)
+        self.scenario_config = dict(scenario_config or {})
+        self.teacher_config = dict(teacher_config or {})
         self.reward_weights = RewardWeights(**(reward_weights or {}))
         self.seed_value: Optional[int] = None
         self.rng = np.random.default_rng()
@@ -105,6 +115,7 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self.min_clearance = float("inf")
         self.cumulative_control_effort = 0.0
         self.time_to_goal: Optional[float] = None
+        self.teacher_bonus_budget_used = 0.0
         self.position_history: List[np.ndarray] = []
         self.obstacle_history: List[np.ndarray] = []
         self.action_history: List[np.ndarray] = []
@@ -275,6 +286,30 @@ class DynamicAirspaceEnv(BaseEnvironment):
             max_episode_steps=self.max_episode_steps,
         )
 
+    def _resolve_episode_step_budget(self, start_to_goal_distance: float) -> int:
+        """Expand the episode horizon when a stage requests an automatic time budget."""
+        if self.auto_time_budget_steps_per_meter <= 0.0:
+            return self.configured_max_episode_steps
+
+        scaled_budget = int(np.ceil(start_to_goal_distance * self.auto_time_budget_steps_per_meter))
+        return max(self.configured_max_episode_steps, scaled_budget + self.auto_time_budget_padding)
+
+    def _teacher_action(self, drone_position: np.ndarray) -> np.ndarray:
+        """Return the heuristic teacher action for the current state."""
+        return heuristic_teacher_action(
+            drone_position=drone_position,
+            goal_position=self.goal_position,
+            obstacle_positions=self.obstacle_positions,
+            action_low=self.action_space.low,
+            action_high=self.action_space.high,
+            teacher_config=self.teacher_config,
+        )
+
+    def teacher_action_for_current_state(self) -> np.ndarray:
+        """Return teacher guidance for the current simulator state."""
+        drone_position, _ = self._drone_position_velocity()
+        return self._teacher_action(drone_position)
+
     def _minimum_obstacle_distance(self, drone_position: np.ndarray) -> float:
         """Return the closest obstacle-center distance."""
         return minimum_obstacle_distance(
@@ -309,8 +344,13 @@ class DynamicAirspaceEnv(BaseEnvironment):
         if seed is not None:
             self._set_seed(seed)
 
-        start_position = sample_start_position(self.rng, self.workspace_bounds)
-        self.goal_position = sample_goal_position(self.rng, self.workspace_bounds, start_position)
+        start_position = sample_start_position(self.rng, self.workspace_bounds, self.scenario_config)
+        self.goal_position = sample_goal_position(
+            self.rng,
+            self.workspace_bounds,
+            start_position,
+            self.scenario_config,
+        )
         self.obstacle_positions, self.obstacle_velocities = sample_dynamic_obstacles(
             self.rng,
             self.workspace_bounds,
@@ -321,6 +361,7 @@ class DynamicAirspaceEnv(BaseEnvironment):
             obstacle_speed_range=self.obstacle_speed_range,
             start_position=start_position,
             goal_position=self.goal_position,
+            scenario_config=self.scenario_config,
         )
         self.initial_positions = start_position.reshape(1, 3).astype(np.float32)
         self._sync_initial_positions_to_backend()
@@ -337,7 +378,9 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self.min_clearance = self.min_obstacle_distance - (self.obstacle_radius + self.collision_distance)
         self.cumulative_control_effort = 0.0
         self.time_to_goal = None
+        self.teacher_bonus_budget_used = 0.0
         self.start_to_goal_distance = float(np.linalg.norm(self.goal_position - drone_position))
+        self.max_episode_steps = self._resolve_episode_step_budget(self.start_to_goal_distance)
         self.prev_distance_to_goal = self.start_to_goal_distance
         self.position_history = [drone_position.copy()]
         self.obstacle_history = [self.obstacle_positions.copy()]
@@ -350,6 +393,7 @@ class DynamicAirspaceEnv(BaseEnvironment):
         """Advance the PyBullet sim and update moving obstacles."""
         action_array = self._normalize_action(action)
         previous_position, _ = self._drone_position_velocity()
+        teacher_action = self._teacher_action(previous_position)
         self.pybullet_env.step(action_array.reshape(1, -1))
         self.obstacle_positions, self.obstacle_velocities = advance_obstacles(
             self.obstacle_positions,
@@ -383,6 +427,24 @@ class DynamicAirspaceEnv(BaseEnvironment):
             clearance_margin=clearance_margin,
             action_array=action_array,
         )
+        teacher_bonus = teacher_alignment_bonus(
+            action_array=action_array,
+            teacher_action=teacher_action,
+            action_low=self.action_space.low,
+            action_high=self.action_space.high,
+            teacher_config=self.teacher_config,
+        )
+        teacher_bonus_budget = float(self.teacher_config.get("episode_bonus_budget", 0.0))
+        if teacher_bonus != 0.0 and teacher_bonus_budget > 0.0:
+            remaining_budget = max(teacher_bonus_budget - self.teacher_bonus_budget_used, 0.0)
+            if remaining_budget <= 0.0:
+                teacher_bonus = 0.0
+            else:
+                teacher_bonus = float(np.clip(teacher_bonus, -remaining_budget, remaining_budget))
+                self.teacher_bonus_budget_used += abs(teacher_bonus)
+        if teacher_bonus != 0.0:
+            reward += teacher_bonus
+            reward_components["teacher"] = teacher_bonus
 
         self.prev_distance_to_goal = distance_to_goal
         self.goal_reached = self.goal_reached or goal_now
@@ -396,6 +458,15 @@ class DynamicAirspaceEnv(BaseEnvironment):
 
         terminated = bool(goal_now or collision_now)
         truncated = bool((self.current_step >= self.max_episode_steps) and not terminated)
+        if truncated:
+            remaining_ratio = float(np.clip(distance_to_goal / max(self.start_to_goal_distance, 1e-6), 0.0, 1.5))
+            timeout_term = float(self.reward_weights.timeout)
+            timeout_distance_term = float(self.reward_weights.timeout_distance * remaining_ratio)
+            reward += timeout_term + timeout_distance_term
+            reward_components["timeout"] = timeout_term
+            reward_components["timeout_distance"] = timeout_distance_term
+            self.episode_return += timeout_term + timeout_distance_term
+            self.reward_history[-1] = reward
         observation = self._build_observation(drone_position=drone_position, drone_velocity=drone_velocity)
         return observation, reward, terminated, truncated, self._episode_info(reward_components=reward_components)
 

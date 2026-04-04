@@ -104,6 +104,18 @@ class GraphPPOAgent:
             _, value = self.model.distribution_and_value(observation_batch)
         return float(value.item())
 
+    def evaluate_action(self, observation: GraphObservation, action: np.ndarray) -> Dict[str, float]:
+        """Score an externally provided action under the current policy."""
+        observation_batch = single_graph_observation(observation, self.device)
+        action_tensor = torch.as_tensor(np.asarray(action, dtype=np.float32), dtype=torch.float32, device=self.device)
+        action_tensor = action_tensor.unsqueeze(0)
+        with torch.no_grad():
+            log_prob, _, value = self.model.evaluate_actions(observation_batch, action_tensor)
+        return {
+            "log_prob": float(log_prob.item()),
+            "value": float(value.item()),
+        }
+
     def store_transition(
         self,
         *,
@@ -218,7 +230,14 @@ class GraphPPOAgent:
     def load(self, path: str | Path) -> Dict[str, object]:
         """Restore the policy and optimizer state."""
         payload = torch.load(Path(path), map_location=self.device)
-        self.model.load_state_dict(payload["model_state"])
+        try:
+            self.model.load_state_dict(payload["model_state"])
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Failed to load checkpoint because the checkpoint architecture does not match the current model. "
+                "When resuming training, make sure settings like `agent.hidden_dim` match the checkpoint you are loading.\n"
+                f"Original error:\n{exc}"
+            ) from exc
         optimizer_state = payload.get("optimizer_state")
         if optimizer_state is not None:
             self.optimizer.load_state_dict(optimizer_state)

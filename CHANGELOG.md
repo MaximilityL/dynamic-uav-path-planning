@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.1] - 2026-04-04
+
+### Changed
+- Added the working corridor bootstrap and the stage-aware curriculum/evaluation workflow.
+- Updated training diagnostics, plotting, rendering, and repository docs to match the current experiments.
+
 ## [1.0.0] - 2026-04-03
 
 ### Added

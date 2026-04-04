@@ -41,6 +41,10 @@ class EnvironmentConfig:
     connect_radius: float = 5.0
     workspace_bounds: tuple = ((-3.0, 3.0), (-3.0, 3.0), (0.5, 2.5))
     obstacle_speed_range: tuple = (0.12, 0.35)
+    auto_time_budget_steps_per_meter: float = 0.0
+    auto_time_budget_padding: int = 0
+    scenario_config: Dict[str, Any] = field(default_factory=dict)
+    teacher_config: Dict[str, Any] = field(default_factory=dict)
     reward_weights: Dict[str, float] = field(
         default_factory=lambda: {
             "goal": 40.0,
@@ -49,6 +53,8 @@ class EnvironmentConfig:
             "clearance": 0.5,
             "effort": -0.005,
             "time": -0.01,
+            "timeout": -8.0,
+            "timeout_distance": -20.0,
         }
     )
 
@@ -92,6 +98,8 @@ class TrainingConfig:
     results_dir: str = "results"
     moving_average_window: int = 20
     eval_episodes: int = 10
+    print_interval: int = 10
+    curriculum: list = field(default_factory=list)
 
 
 @dataclass
@@ -139,6 +147,8 @@ class Config:
             env_dict = dict(payload["environment"])
             env_dict["workspace_bounds"] = _as_tuple(env_dict.get("workspace_bounds", ((-3.0, 3.0), (-3.0, 3.0), (0.5, 2.5))))
             env_dict["obstacle_speed_range"] = _as_tuple(env_dict.get("obstacle_speed_range", (0.12, 0.35)))
+            env_dict["scenario_config"] = dict(env_dict.get("scenario_config", {}))
+            env_dict["teacher_config"] = dict(env_dict.get("teacher_config", {}))
             payload["environment"] = EnvironmentConfig(**env_dict)
         if "agent" in payload:
             payload["agent"] = AgentConfig(**payload["agent"])
@@ -218,6 +228,10 @@ def validate_config(config: Config) -> None:
         raise ValueError("max_episode_steps must be positive.")
     if config.environment.connect_radius <= 0.0:
         raise ValueError("connect_radius must be positive.")
+    if config.environment.auto_time_budget_steps_per_meter < 0.0:
+        raise ValueError("auto_time_budget_steps_per_meter must be non-negative.")
+    if config.environment.auto_time_budget_padding < 0:
+        raise ValueError("auto_time_budget_padding must be non-negative.")
     if len(config.environment.obstacle_speed_range) != 2:
         raise ValueError("obstacle_speed_range must contain exactly two values.")
     if config.environment.obstacle_speed_range[0] < 0.0:
@@ -240,5 +254,9 @@ def validate_config(config: Config) -> None:
         raise ValueError("moving_average_window must be positive.")
     if config.training.eval_episodes <= 0:
         raise ValueError("training.eval_episodes must be positive.")
+    if config.training.print_interval <= 0:
+        raise ValueError("training.print_interval must be positive.")
+    if not isinstance(config.training.curriculum, list):
+        raise ValueError("training.curriculum must be a list.")
     if config.evaluation.num_episodes <= 0:
         raise ValueError("evaluation.num_episodes must be positive.")

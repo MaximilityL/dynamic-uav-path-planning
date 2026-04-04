@@ -12,6 +12,7 @@ from src.environments.scenario import (
     sample_goal_position,
     sample_start_position,
 )
+from src.environments.teacher import heuristic_teacher_action, teacher_alignment_bonus, teacher_guided_action
 
 
 def test_scenario_sampling_and_bounce_dynamics() -> None:
@@ -47,6 +48,21 @@ def test_scenario_sampling_and_bounce_dynamics() -> None:
     )
     assert np.isclose(next_positions[0, 0], 2.8)
     assert next_velocities[0, 0] < 0.0
+
+
+def test_goal_sampling_can_stay_close_in_lateral_axes() -> None:
+    """Relative goal windows should keep easier-stage goals near the start laterally."""
+    rng = np.random.default_rng(17)
+    workspace_bounds = np.asarray([[-3.0, 3.0], [-3.0, 3.0], [0.5, 2.5]], dtype=np.float32)
+    scenario_config = {
+        "goal_relative_y_range": (-0.4, 0.4),
+        "goal_relative_z_range": (-0.2, 0.2),
+    }
+
+    start = sample_start_position(rng, workspace_bounds, scenario_config)
+    goal = sample_goal_position(rng, workspace_bounds, start, scenario_config)
+    assert abs(float(goal[1] - start[1])) <= 0.41
+    assert abs(float(goal[2] - start[2])) <= 0.21
 
 
 def test_observation_and_reward_helpers_handle_edge_cases() -> None:
@@ -96,3 +112,58 @@ def test_observation_and_reward_helpers_handle_edge_cases() -> None:
     assert components["goal"] > 0.0
     assert components["clearance"] <= RewardWeights().clearance
     assert np.isfinite(reward)
+
+
+def test_teacher_helpers_produce_finite_guidance() -> None:
+    """The heuristic teacher should emit bounded actions and finite bonuses."""
+    action_low = np.asarray([-1.0, -1.0, -1.0, -1.0], dtype=np.float32)
+    action_high = np.asarray([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+    teacher_action = heuristic_teacher_action(
+        drone_position=np.asarray([0.0, 0.0, 1.0], dtype=np.float32),
+        goal_position=np.asarray([1.0, 0.0, 1.0], dtype=np.float32),
+        obstacle_positions=np.asarray([[0.4, 0.2, 1.0]], dtype=np.float32),
+        action_low=action_low,
+        action_high=action_high,
+        teacher_config={"enabled": True, "reward_scale": 0.1},
+    )
+    assert teacher_action.shape == (4,)
+    assert np.all(teacher_action[:-1] <= action_high[:-1])
+    assert np.all(teacher_action[:-1] >= action_low[:-1])
+    assert 0.0 <= teacher_action[-1] <= action_high[-1]
+
+    bonus = teacher_alignment_bonus(
+        action_array=np.asarray([1.0, 0.0, 0.0, 0.9], dtype=np.float32),
+        teacher_action=teacher_action,
+        action_low=action_low,
+        action_high=action_high,
+        teacher_config={"enabled": True, "reward_scale": 0.1},
+    )
+    assert np.isfinite(bonus)
+    assert bonus > 0.0
+
+    negative_bonus = teacher_alignment_bonus(
+        action_array=np.asarray([-1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        teacher_action=teacher_action,
+        action_low=action_low,
+        action_high=action_high,
+        teacher_config={"enabled": True, "reward_scale": 0.1},
+    )
+    assert negative_bonus < 0.0
+
+    guided_action = teacher_guided_action(
+        policy_action=np.asarray([-1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        teacher_action=np.asarray([1.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        action_low=action_low,
+        action_high=action_high,
+        teacher_config={"enabled": True, "action_mix": 0.5},
+    )
+    assert np.allclose(guided_action, np.asarray([0.0, 0.0, 0.0, 0.5], dtype=np.float32))
+
+    unchanged_action = teacher_guided_action(
+        policy_action=np.asarray([-0.3, 0.0, 0.0, 0.2], dtype=np.float32),
+        teacher_action=np.asarray([1.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        action_low=action_low,
+        action_high=action_high,
+        teacher_config={"enabled": False, "action_mix": 0.8},
+    )
+    assert np.allclose(unchanged_action, np.asarray([-0.3, 0.0, 0.0, 0.2], dtype=np.float32))
