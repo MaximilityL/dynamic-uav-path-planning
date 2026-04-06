@@ -1,5 +1,5 @@
 name: "dynamic_uav_path_planning_default_post_commit"
-version: "1.1.0"
+version: "1.1.1"
 description: "Default target-stage continuation that locks in post-pretrain checkpoints, lowers exploration noise, shortens intro wandering time, and advances from the default curriculum intro checkpoint toward stable target_default"
 tags:
   [

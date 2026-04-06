@@ -51,6 +51,9 @@ class GraphActorCritic(nn.Module):
             nn.Linear(hidden_dim, 1),
         )
         self.log_std = nn.Parameter(torch.full((action_dim,), math.log(action_std_init)))
+        # Floor on log_std to prevent exploration collapse in target stages.
+        # Set via set_log_std_floor(); None disables the floor.
+        self.log_std_floor: float | None = math.log(0.08)
 
         self.register_buffer("action_low", action_low.float())
         self.register_buffer("action_high", action_high.float())
@@ -65,7 +68,10 @@ class GraphActorCritic(nn.Module):
         direction_mean = torch.tanh(raw_policy[:, :-1]) * self.action_scale[:-1] + self.action_bias[:-1]
         speed_mean = torch.sigmoid(raw_policy[:, -1:]) * self.speed_scale
         mean = torch.cat([direction_mean, speed_mean], dim=-1)
-        std = torch.exp(self.log_std).unsqueeze(0).expand_as(mean)
+        log_std = self.log_std
+        if self.log_std_floor is not None:
+            log_std = log_std.clamp(min=self.log_std_floor)
+        std = torch.exp(log_std).unsqueeze(0).expand_as(mean)
         distribution = Normal(mean, std)
         value = self.value_head(embedding).squeeze(-1)
         return distribution, value

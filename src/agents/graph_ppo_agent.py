@@ -410,6 +410,40 @@ class GraphPPOAgent:
         )
         return path
 
+    def _adapt_legacy_model_state(self, model_state: Dict[str, torch.Tensor]) -> tuple[Dict[str, torch.Tensor], List[str]]:
+        """Expand known legacy checkpoint tensors when newer observations add input features."""
+        current_state = self.model.state_dict()
+        adapted_state = dict(model_state)
+        adapted_keys: List[str] = []
+
+        compatible_resize_keys = [
+            "encoder.output_projection.0.weight",
+            "encoder.network.0.weight",
+        ]
+        for key in compatible_resize_keys:
+            loaded_tensor = adapted_state.get(key)
+            current_tensor = current_state.get(key)
+            if loaded_tensor is None or current_tensor is None:
+                continue
+            if tuple(loaded_tensor.shape) == tuple(current_tensor.shape):
+                continue
+            if loaded_tensor.ndim != current_tensor.ndim:
+                continue
+            if loaded_tensor.shape[0] != current_tensor.shape[0]:
+                continue
+            if loaded_tensor.shape[-1] >= current_tensor.shape[-1]:
+                continue
+
+            expanded_tensor = current_tensor.clone()
+            source_tensor = loaded_tensor.to(device=expanded_tensor.device, dtype=expanded_tensor.dtype)
+            expanded_tensor[..., : source_tensor.shape[-1]] = source_tensor
+            adapted_state[key] = expanded_tensor
+            adapted_keys.append(
+                f"{key}: {tuple(loaded_tensor.shape)} -> {tuple(current_tensor.shape)}"
+            )
+
+        return adapted_state, adapted_keys
+
     def load(
         self,
         path: str | Path,
@@ -421,17 +455,25 @@ class GraphPPOAgent:
         """Restore the policy and optionally the optimizer state."""
         del load_scheduler_state
         payload = torch.load(Path(path), map_location=self.device)
+        adapted_state, adapted_keys = self._adapt_legacy_model_state(payload["model_state"])
         try:
-            self.model.load_state_dict(payload["model_state"])
+            self.model.load_state_dict(adapted_state)
         except RuntimeError as exc:
             raise RuntimeError(
                 "Failed to load checkpoint because the checkpoint architecture does not match the current model. "
                 "When resuming training, make sure settings like `agent.hidden_dim` match the checkpoint you are loading.\n"
                 f"Original error:\n{exc}"
             ) from exc
+        if adapted_keys:
+            print(
+                "[INFO] Adapted legacy checkpoint tensors to the current observation shape: "
+                + ", ".join(adapted_keys)
+            )
         optimizer_state = payload.get("optimizer_state")
-        if load_optimizer_state and optimizer_state is not None:
+        if load_optimizer_state and optimizer_state is not None and not adapted_keys:
             self.optimizer.load_state_dict(optimizer_state)
+        elif load_optimizer_state and optimizer_state is not None and adapted_keys:
+            print("[INFO] Skipping optimizer state load because checkpoint tensors were shape-adapted.")
         elif reset_optimizer_if_skipped:
             self.reset_optimizer()
         return payload.get("metadata", {})

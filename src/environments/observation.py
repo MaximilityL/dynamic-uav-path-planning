@@ -83,12 +83,46 @@ def build_dense_graph_observation(
     )
     safety_distance = obstacle_radius + collision_distance
     clearance_proxy = (min_distance - safety_distance) / max(connect_radius, 1e-6)
+
+    # Closest-obstacle explicit features: make the single most relevant
+    # obstacle directly visible to the policy head, bypassing GNN pooling.
+    closest_rel_pos = np.zeros(3, dtype=np.float32)
+    closest_rel_vel = np.zeros(3, dtype=np.float32)
+    ttc_feature = np.float32(1.0)  # 1.0 == "no imminent collision"
+    if obstacle_positions.shape[0] > 0:
+        deltas = obstacle_positions - drone_position.reshape(1, 3)
+        distances = np.linalg.norm(deltas, axis=1)
+        idx = int(np.argmin(distances))
+        closest_rel_pos = (deltas[idx] / workspace_span).astype(np.float32)
+        rel_vel_vec = (obstacle_velocities[idx] - drone_velocity).astype(np.float32)
+        closest_rel_vel = (rel_vel_vec / max(float(obstacle_speed_range[1]), 1e-6)).astype(np.float32)
+        # Time-to-closest-approach proxy: projection of relative velocity on
+        # the line from drone to obstacle. Negative = closing. We normalize
+        # into [0, 1] where 1 = safe (opening / still), 0 = imminent.
+        direction = deltas[idx]
+        direction_norm = float(np.linalg.norm(direction))
+        if direction_norm > 1e-6:
+            closing_speed = float(np.dot(rel_vel_vec, -direction / direction_norm))
+            # Clearance-normalized TTC; larger is safer.
+            clearance = max(float(distances[idx]) - safety_distance, 1e-3)
+            if closing_speed > 1e-3:
+                ttc = clearance / closing_speed
+                ttc_feature = np.float32(np.tanh(ttc / 2.0))  # ~1 when ttc>>2s
+            else:
+                ttc_feature = np.float32(1.0)
+
     global_features = np.asarray(
         [
             np.linalg.norm(goal_position - drone_position) / max(float(np.linalg.norm(workspace_span)), 1e-6),
             clearance_proxy,
             np.linalg.norm(drone_velocity),
             float(current_step / max(max_episode_steps, 1)),
+            float(closest_rel_pos[0]),
+            float(closest_rel_pos[1]),
+            float(closest_rel_pos[2]),
+            float(closest_rel_vel[0]),
+            float(closest_rel_vel[1]),
+            float(ttc_feature),
         ],
         dtype=np.float32,
     )

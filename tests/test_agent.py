@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+from src.agents import GraphPPOAgent
 from src.training.runner import create_agent, create_environment, run_episode
 from src.utils.config import load_config
 
@@ -90,3 +91,49 @@ def test_agent_load_can_skip_optimizer_state(tmp_path: Path) -> None:
         assert len(resumed_without_optimizer.optimizer.state) == 0
     finally:
         env.close()
+
+
+def test_agent_load_can_adapt_legacy_global_feature_expansion(tmp_path: Path) -> None:
+    """Loading older checkpoints should tolerate the repo's expanded global feature vector."""
+    config = load_config("configs/default.yaml")
+    config.environment.max_episode_steps = 8
+    config.environment.num_dynamic_obstacles = 2
+
+    env = create_environment(config, gui=False, seed=31)
+    try:
+        legacy_agent = GraphPPOAgent(
+            encoder_type=config.agent.encoder_type,
+            max_nodes=env.max_nodes,
+            node_feature_dim=env.node_feature_dim,
+            edge_feature_dim=env.edge_feature_dim,
+            global_feature_dim=4,
+            action_dim=env.action_dim,
+            action_low=env.action_space.low,
+            action_high=env.action_space.high,
+            hidden_dim=config.agent.hidden_dim,
+            message_passing_steps=config.agent.message_passing_steps,
+            lr_actor=config.agent.lr_actor,
+            lr_critic=config.agent.lr_critic,
+            gamma=config.agent.gamma,
+            gae_lambda=config.agent.gae_lambda,
+            clip_epsilon=config.agent.clip_epsilon,
+            entropy_coef=config.agent.entropy_coef,
+            value_coef=config.agent.value_coef,
+            ppo_epochs=config.agent.ppo_epochs,
+            mini_batch_size=config.agent.mini_batch_size,
+            max_grad_norm=config.agent.max_grad_norm,
+            action_std_init=config.agent.action_std_init,
+            device="cpu",
+        )
+        checkpoint_path = legacy_agent.save(tmp_path / "legacy_checkpoint.pth")
+
+        current_agent = create_agent(config, env)
+        metadata = current_agent.load(checkpoint_path, load_optimizer_state=False, reset_optimizer_if_skipped=True)
+    finally:
+        env.close()
+
+    loaded_weight = current_agent.model.state_dict()["encoder.output_projection.0.weight"]
+    legacy_weight = legacy_agent.model.state_dict()["encoder.output_projection.0.weight"]
+    assert metadata == {}
+    assert loaded_weight.shape[1] == legacy_weight.shape[1] + 6
+    assert loaded_weight[:, : legacy_weight.shape[1]].equal(legacy_weight)

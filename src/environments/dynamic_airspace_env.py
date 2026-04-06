@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -101,7 +102,7 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self.max_nodes = 2 + self.num_dynamic_obstacles
         self.node_feature_dim = 10
         self.edge_feature_dim = 4
-        self.global_feature_dim = 4
+        self.global_feature_dim = 10
 
         self.initial_positions = np.asarray([[0.0, 0.0, 1.0]], dtype=np.float32)
         self.goal_position = np.zeros(3, dtype=np.float32)
@@ -132,6 +133,7 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self.prev_route_progress_ratio = 0.0
         self.prev_route_line_lateral_error = 0.0
         self._debug_body_ids: List[int] = []
+        self._video_logging_id: Optional[int] = None
 
         self._set_seed(seed)
         self._init_pybullet_env()
@@ -259,6 +261,73 @@ class DynamicAirspaceEnv(BaseEnvironment):
             except Exception:
                 continue
         self._debug_body_ids = []
+
+    def set_overview_camera(self) -> None:
+        """Aim the GUI camera at the corridor between the sampled start and goal."""
+        if not self.gui:
+            return
+
+        start_position = np.asarray(self.initial_positions[0], dtype=np.float32)
+        route_center = 0.5 * (start_position + self.goal_position)
+        workspace_span = self.workspace_bounds[:, 1] - self.workspace_bounds[:, 0]
+        route_span = float(np.linalg.norm(self.goal_position - start_position))
+        camera_distance = max(float(np.linalg.norm(workspace_span)) * 0.85, route_span * 1.4, 2.6)
+        lateral_delta = float(self.goal_position[1] - start_position[1])
+        camera_yaw = -38.0 if lateral_delta >= 0.0 else 38.0
+        p.resetDebugVisualizerCamera(
+            cameraDistance=camera_distance,
+            cameraYaw=camera_yaw,
+            cameraPitch=-30.0,
+            cameraTargetPosition=route_center.tolist(),
+            physicsClientId=self._physics_client_id(),
+        )
+
+    def start_video_recording(self, path: str | Path) -> None:
+        """Record the active GUI session into an MP4 file via PyBullet logging."""
+        if not self.gui:
+            raise RuntimeError("Video recording requires gui=True.")
+
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        self.stop_video_recording()
+        self.set_overview_camera()
+        self._video_logging_id = int(
+            p.startStateLogging(
+                p.STATE_LOGGING_VIDEO_MP4,
+                str(output_path),
+                physicsClientId=self._physics_client_id(),
+            )
+        )
+
+    def stop_video_recording(self) -> None:
+        """Stop an active PyBullet MP4 recording session if one exists."""
+        if self._video_logging_id is None:
+            return
+        try:
+            p.stopStateLogging(self._video_logging_id)
+        finally:
+            self._video_logging_id = None
+
+    def capture_gui_frame(self) -> np.ndarray:
+        """Capture one RGB frame from the active GUI camera."""
+        if not self.gui:
+            raise RuntimeError("GUI frame capture requires gui=True.")
+
+        camera = p.getDebugVisualizerCamera(physicsClientId=self._physics_client_id())
+        width = max(int(camera[0]), 1)
+        height = max(int(camera[1]), 1)
+        view_matrix = camera[2]
+        projection_matrix = camera[3]
+        _, _, rgba_pixels, _, _ = p.getCameraImage(
+            width=width,
+            height=height,
+            viewMatrix=view_matrix,
+            projectionMatrix=projection_matrix,
+            renderer=p.ER_BULLET_HARDWARE_OPENGL,
+            physicsClientId=self._physics_client_id(),
+        )
+        frame = np.asarray(rgba_pixels, dtype=np.uint8).reshape(height, width, 4)[..., :3]
+        return frame.copy()
 
     def _drone_position_velocity(self) -> tuple[np.ndarray, np.ndarray]:
         """Read the current drone state from the simulator."""
@@ -513,6 +582,7 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self._sync_initial_positions_to_backend()
         self.pybullet_env.reset(seed=self.seed_value)
         self._refresh_debug_bodies(create=True)
+        self.set_overview_camera()
 
         drone_position, _ = self._drone_position_velocity()
         self.current_step = 0
@@ -697,6 +767,12 @@ class DynamicAirspaceEnv(BaseEnvironment):
             "positions": np.asarray(self.position_history, dtype=np.float32),
             "obstacles": np.asarray(self.obstacle_history, dtype=np.float32),
             "goal": np.asarray(self.goal_position, dtype=np.float32),
+            "start_position": np.asarray(self.initial_positions[0], dtype=np.float32),
+            "workspace_bounds": np.asarray(self.workspace_bounds, dtype=np.float32),
+            "obstacle_radius": np.float32(self.obstacle_radius),
+            "goal_tolerance": np.float32(self.goal_tolerance),
+            "collision_distance": np.float32(self.collision_distance),
+            "ctrl_freq": np.float32(self.ctrl_freq),
             "actions": np.asarray(self.action_history, dtype=np.float32),
             "rewards": np.asarray(self.reward_history, dtype=np.float32),
             "summary": self.get_episode_summary(),
@@ -704,5 +780,6 @@ class DynamicAirspaceEnv(BaseEnvironment):
 
     def close(self) -> None:
         """Release PyBullet resources."""
+        self.stop_video_recording()
         self._remove_debug_bodies()
         self.pybullet_env.close()

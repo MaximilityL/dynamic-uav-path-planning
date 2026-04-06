@@ -1,5 +1,5 @@
 name: "dynamic_uav_path_planning_default"
-version: "1.1.0"
+version: "1.1.1"
 description: "Canonical default config based on the retained bypass-v3 curriculum run"
 tags:
   [

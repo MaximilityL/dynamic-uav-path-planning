@@ -6,6 +6,7 @@ import importlib
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from src.agents import GraphPPOAgent
@@ -185,6 +186,136 @@ def test_plot_script_main_parses_args(monkeypatch: pytest.MonkeyPatch, capsys: p
     assert module.main() == 0
     output = capsys.readouterr().out
     assert f"plot={expected}" in output
+
+
+def test_generate_stage_showcase_script_main_parses_args(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    """Stage showcase CLI should resolve cases and print a compact summary."""
+    module = _import_script_module("generate_stage_showcase")
+
+    class DummyConfig:
+        def __init__(self) -> None:
+            self.environment = type("Environment", (), {"seed": 7})()
+            self.evaluation = type("Evaluation", (), {"num_episodes": 5})()
+            self.training = type(
+                "Training",
+                (),
+                {
+                    "results_dir": str(tmp_path / "results"),
+                    "checkpoint_dir": str(tmp_path / "checkpoints"),
+                    "eval_episodes": 4,
+                    "resume": {},
+                    "curriculum": [
+                        {"name": "target_bypass_intro_v2"},
+                        {"name": "target_default"},
+                    ],
+                },
+            )()
+
+    config = DummyConfig()
+
+    monkeypatch.setattr(module, "load_config", lambda path: config)
+    monkeypatch.setattr(module, "validate_config", lambda cfg: None)
+    monkeypatch.setattr(module, "_auto_best_reached_stage", lambda cfg: "target_bypass_intro_v2")
+    monkeypatch.setattr(
+        module,
+        "_resolve_model_path",
+        lambda **kwargs: (Path(tmp_path / "checkpoints" / "mock_model.pth"), "mock"),
+    )
+    monkeypatch.setattr(
+        module,
+        "_generate_case",
+        lambda **kwargs: {
+            "summary": {"success_rate": 0.5, "collision_rate": 0.0},
+            "stage_name": kwargs["stage_name"],
+        },
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_stage_showcase.py",
+            "--config",
+            "configs/default.yaml",
+            "--output-dir",
+            str(tmp_path / "showcase"),
+            "--no-video",
+        ],
+    )
+
+    assert module.main() == 0
+    output = capsys.readouterr().out
+    assert f"output_dir={tmp_path / 'showcase'}" in output
+    assert "best_reached_stage=target_bypass_intro_v2" in output
+    assert "wanted_stage=target_default" in output
+
+
+def test_generate_stage_showcase_records_frames_into_video_writer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Video replay should write multiple GUI frames into the ffmpeg writer abstraction."""
+    module = _import_script_module("generate_stage_showcase")
+
+    class DummyEnv:
+        ctrl_freq = 30
+
+        def __init__(self) -> None:
+            self.steps = 0
+
+        def reset(self, seed=None):
+            del seed
+            return {"node_features": np.zeros((1, 1), dtype=np.float32)}, {}
+
+        def capture_gui_frame(self):
+            return np.full((4, 6, 3), self.steps, dtype=np.uint8)
+
+        def step(self, action):
+            del action
+            self.steps += 1
+            return {"node_features": np.zeros((1, 1), dtype=np.float32)}, 0.0, self.steps >= 2, False, {}
+
+        def get_episode_summary(self):
+            return {"success": 1.0, "distance_to_goal": 0.0, "episode_return": 1.0}
+
+        def close(self):
+            return None
+
+    class DummyAgent:
+        def load(self, path):
+            del path
+
+        def select_action(self, observation, deterministic=True):
+            del observation, deterministic
+            return np.zeros((4,), dtype=np.float32), {}
+
+    written_frames: list[np.ndarray] = []
+
+    class DummyWriter:
+        def __init__(self, *, output_path: Path, width: int, height: int, fps: int) -> None:
+            self.output_path = Path(output_path)
+            self.output_path.parent.mkdir(parents=True, exist_ok=True)
+            self.output_path.write_bytes(b"placeholder-video-data" * 80)
+            self.width = width
+            self.height = height
+            self.fps = fps
+
+        def write(self, frame: np.ndarray) -> None:
+            written_frames.append(np.asarray(frame))
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(module, "create_environment", lambda *args, **kwargs: DummyEnv())
+    monkeypatch.setattr(module, "create_agent", lambda *args, **kwargs: DummyAgent())
+    monkeypatch.setattr(module, "_FFmpegVideoWriter", DummyWriter)
+
+    config = type("Config", (), {"environment": type("EnvCfg", (), {"seed": 7})()})()
+    metrics = module._record_episode_video(
+        config=config,
+        model_path=tmp_path / "model.pth",
+        episode_seed=101,
+        output_path=tmp_path / "episode.mp4",
+    )
+
+    assert metrics["success"] == 1.0
+    assert len(written_frames) >= 3
 
 
 def test_smoke_test_script_main_runs(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

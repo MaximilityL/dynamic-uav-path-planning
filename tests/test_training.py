@@ -183,6 +183,37 @@ def test_checkpoint_score_prefers_rejoined_route_when_goal_distance_is_tied() ->
     assert better_rejoin > wider_timeout
 
 
+def test_best_episode_score_prefers_success_then_goal_distance() -> None:
+    """Showcase trajectory selection should prefer success, then closest approach."""
+    far_success = loops._best_episode_score(
+        {
+            "success": 1.0,
+            "collision": 0.0,
+            "distance_to_goal": 0.3,
+            "episode_return": 5.0,
+        }
+    )
+    close_failure = loops._best_episode_score(
+        {
+            "success": 0.0,
+            "collision": 0.0,
+            "distance_to_goal": 0.05,
+            "episode_return": 50.0,
+        }
+    )
+    farther_failure = loops._best_episode_score(
+        {
+            "success": 0.0,
+            "collision": 0.0,
+            "distance_to_goal": 0.8,
+            "episode_return": 100.0,
+        }
+    )
+
+    assert far_success > close_failure
+    assert close_failure > farther_failure
+
+
 def test_stage_regression_protection_rolls_back_to_stage_best(tmp_path: Path, monkeypatch) -> None:
     """A stage that regresses after being solved should restore its own best checkpoint."""
     config = load_config("configs/default.yaml")

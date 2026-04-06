@@ -1,5 +1,5 @@
 name: "dynamic_uav_path_planning_default_curriculum"
-version: "1.1.0"
+version: "1.1.1"
 description: "Default full fresh curriculum with target-intro plateau recovery, stronger teacher-demo replay, and higher-persistence behavior cloning for the bypass maneuver"
 tags:
   [

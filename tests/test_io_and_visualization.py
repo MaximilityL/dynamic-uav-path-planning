@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from src.utils.io import append_jsonl, save_json, save_npz
+from src.visualization import plot_episode_trajectory_2d, plot_episode_trajectory_3d, save_episode_showcase_plots
 from src.visualization.plots import load_jsonl, plot_training_history
 
 
@@ -102,3 +103,52 @@ def test_plot_training_report_marks_stage_regression(tmp_path: Path) -> None:
     plot_training_history(history_path=history_path, output_dir=tmp_path / "plots")
     report = json.loads((tmp_path / "plots" / "training_report.json").read_text(encoding="utf-8"))
     assert report["stage_report"][0]["status"] == "regressed_after_solving"
+
+
+def test_episode_showcase_plots_generate_2d_and_3d_outputs(tmp_path: Path) -> None:
+    """Trajectory showcase helpers should write readable 2D and 3D figures."""
+    trajectory = {
+        "positions": np.asarray(
+            [
+                [-2.0, 0.0, 1.0],
+                [-1.0, 0.2, 1.0],
+                [0.0, 0.4, 1.1],
+                [1.0, 0.1, 1.0],
+            ],
+            dtype=np.float32,
+        ),
+        "obstacles": np.asarray(
+            [
+                [[-0.8, -0.4, 1.0], [0.1, 0.7, 1.2]],
+                [[-0.5, -0.2, 1.0], [0.2, 0.5, 1.2]],
+                [[-0.2, 0.0, 1.0], [0.3, 0.3, 1.2]],
+                [[0.1, 0.2, 1.0], [0.4, 0.1, 1.2]],
+            ],
+            dtype=np.float32,
+        ),
+        "goal": np.asarray([1.5, 0.0, 1.0], dtype=np.float32),
+        "start_position": np.asarray([-2.0, 0.0, 1.0], dtype=np.float32),
+        "workspace_bounds": np.asarray([[-3.0, 3.0], [-3.0, 3.0], [0.5, 2.5]], dtype=np.float32),
+        "goal_tolerance": np.float32(0.35),
+        "summary": {
+            "episode_return": 12.5,
+            "success": 1.0,
+            "collision": 0.0,
+            "steps": 4.0,
+            "min_clearance": 0.42,
+        },
+    }
+
+    plot_2d = plot_episode_trajectory_2d(trajectory=trajectory, output_path=tmp_path / "trajectory_2d.png", title="2D")
+    plot_3d = plot_episode_trajectory_3d(trajectory=trajectory, output_path=tmp_path / "trajectory_3d.png", title="3D")
+    paired = save_episode_showcase_plots(
+        trajectory=trajectory,
+        output_dir=tmp_path / "showcase",
+        stem="episode",
+        title="Showcase",
+    )
+
+    assert plot_2d.exists()
+    assert plot_3d.exists()
+    assert paired["plot_2d"].exists()
+    assert paired["plot_3d"].exists()

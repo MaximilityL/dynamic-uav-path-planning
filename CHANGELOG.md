@@ -2,6 +2,11 @@
 
 All notable changes to this project are recorded here.
 
+## [1.1.1] - 2026-04-06
+
+- Added the stage showcase exporter with 2D and 3D trajectory plots plus GUI video capture for the best reached and wanted stages.
+- Switched showcase episode selection to prefer successful goal reaches first, then minimum remaining goal distance, and kept legacy checkpoint loading compatible with the expanded observation features.
+
 ## [1.1.0] - 2026-04-06
 
 - Promoted the retained bypass-v3 curriculum to `configs/default.yaml`, moved its kept run artifacts under the `default` output paths, and refreshed the default plots.

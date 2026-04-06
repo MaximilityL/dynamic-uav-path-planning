@@ -16,6 +16,7 @@ from ..environments.teacher import teacher_guided_action
 from ..evaluation.metrics import summarize_episodes
 from ..utils.config import Config, save_config
 from ..utils.io import append_jsonl, save_json, save_npz
+from ..visualization import save_episode_showcase_plots
 from .factories import build_output_layout, create_agent, create_environment, set_global_seeds
 
 EVALUATION_SEED_OFFSET = 100_000
@@ -60,6 +61,16 @@ def _checkpoint_score(summary: Dict[str, float], stage_index: int = 0) -> tuple[
         -float(summary.get("avg_distance_to_goal", 0.0)),
         -float(summary.get("avg_route_line_lateral_error", 0.0)),
         float(summary.get("avg_episode_return", 0.0)),
+    )
+
+
+def _best_episode_score(metrics: Dict[str, object]) -> tuple[float, float, float, float]:
+    """Rank single episodes for plots/replays by outcome quality, not raw return."""
+    return (
+        float(metrics.get("success", 0.0)),
+        -float(metrics.get("distance_to_goal", float("inf"))),
+        -float(metrics.get("collision", 0.0)),
+        float(metrics.get("episode_return", 0.0)),
     )
 
 
@@ -1096,7 +1107,7 @@ def _evaluate_current_policy(
     env = create_environment(config, gui=render, seed=config.environment.seed + seed_offset)
     history: List[Dict[str, object]] = []
     best_trajectory = None
-    best_return = -float("inf")
+    best_episode_score = (-float("inf"), -float("inf"), -float("inf"), -float("inf"))
 
     try:
         for episode_idx in range(int(num_episodes)):
@@ -1108,8 +1119,9 @@ def _evaluate_current_policy(
                 store_transition=False,
             )
             history.append(metrics)
-            if float(metrics.get("episode_return", 0.0)) >= best_return:
-                best_return = float(metrics.get("episode_return", 0.0))
+            episode_score = _best_episode_score(metrics)
+            if episode_score >= best_episode_score:
+                best_episode_score = episode_score
                 best_trajectory = trajectory
     finally:
         env.close()
@@ -1123,17 +1135,15 @@ def _evaluate_current_policy(
 
 def _save_best_trajectory(path_prefix: Path, trajectory: Dict[str, object]) -> None:
     """Persist one evaluation trajectory in the same format as standalone evaluation."""
+    trajectory_payload = {key: value for key, value in trajectory.items() if key != "summary"}
     save_npz(
         path_prefix.with_suffix(".npz"),
-        {
-            "positions": trajectory["positions"],
-            "obstacles": trajectory["obstacles"],
-            "goal": trajectory["goal"],
-            "actions": trajectory["actions"],
-            "rewards": trajectory["rewards"],
-        },
+        trajectory_payload,
     )
-    save_json(path_prefix.with_name(f"{path_prefix.stem}_summary.json"), trajectory["summary"])
+    summary_payload = dict(trajectory["summary"])
+    if "episode_seed" in trajectory:
+        summary_payload["episode_seed"] = int(trajectory["episode_seed"])
+    save_json(path_prefix.with_name(f"{path_prefix.stem}_summary.json"), summary_payload)
 
 
 def run_episode(
@@ -1187,7 +1197,9 @@ def run_episode(
         bootstrap_value = 0.0 if terminated else agent.estimate_value(observation)
         agent.finish_rollout(last_value=bootstrap_value)
 
-    return env.get_episode_summary(), env.export_episode()
+    trajectory = env.export_episode()
+    trajectory["episode_seed"] = int(episode_seed)
+    return env.get_episode_summary(), trajectory
 
 
 def train_agent(
@@ -1908,5 +1920,11 @@ def evaluate_agent(
         save_json(layout["eval"] / "summary.json", summary)
         if config.evaluation.save_trajectories and best_trajectory is not None:
             _save_best_trajectory(layout["trajectories"] / "eval_best_episode", best_trajectory)
+            save_episode_showcase_plots(
+                trajectory=best_trajectory,
+                output_dir=layout["plots"],
+                stem="eval_best_episode",
+                title="Best Evaluation Episode",
+            )
 
     return summary
