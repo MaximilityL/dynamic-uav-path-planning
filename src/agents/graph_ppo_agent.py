@@ -96,6 +96,13 @@ class GraphPPOAgent:
             "critic": float(self.optimizer.param_groups[1]["lr"]),
         }
 
+    def default_learning_rates(self) -> Dict[str, float]:
+        """Return the base actor/critic learning rates configured for fresh resets."""
+        return {
+            "actor": float(self._default_actor_lr),
+            "critic": float(self._default_critic_lr),
+        }
+
     def set_learning_rates(self, *, actor_lr: float | None = None, critic_lr: float | None = None) -> Dict[str, float]:
         """Update the optimizer learning rates in place."""
         current = self.learning_rates()

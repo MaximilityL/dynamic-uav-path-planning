@@ -1,6 +1,6 @@
 # Dynamic UAV Path Planning
 
-Version: `1.0.4`
+Version: `1.0.6`
 
 This repository is a research codebase for single-UAV path planning in dynamic obstacle fields. It combines a PyBullet-backed UAV, fixed-size dense graph observations, and a readable PPO baseline that is optimized for iteration on curriculum design, reward shaping, teacher guidance, and training infrastructure.
 

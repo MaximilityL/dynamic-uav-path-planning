@@ -34,6 +34,8 @@ class RewardWeights:
     timeout: float = -8.0
     timeout_distance: float = -20.0
     remaining_distance: float = 0.0
+    bypass_clearance_progress: float = 0.0
+    route_rejoin_progress: float = 0.0
     stall: float = 0.0
     stall_window_steps: int = 0
     stall_progress_threshold: float = 0.0
@@ -50,6 +52,8 @@ def compute_reward(
     clearance_margin: float,
     action_array: np.ndarray,
     remaining_distance_ratio: float = 0.0,
+    bypass_clearance_progress_delta: float = 0.0,
+    route_rejoin_progress_delta: float = 0.0,
 ) -> tuple[float, Dict[str, float]]:
     """Build reward components and their total reward."""
     clipped_progress = float(np.clip(progress_delta, -1.0, 1.0))
@@ -72,6 +76,10 @@ def compute_reward(
             danger_penalty = -abs(float(reward_weights.danger_clearance_penalty)) * (normalized_shortfall**power)
     effort_scale = float(np.linalg.norm(action_array) / np.sqrt(max(action_array.size, 1)))
     remaining_distance_term = reward_weights.remaining_distance * float(np.clip(remaining_distance_ratio, 0.0, 1.5))
+    bypass_clearance_progress_term = reward_weights.bypass_clearance_progress * float(
+        np.clip(bypass_clearance_progress_delta, -1.0, 1.0)
+    )
+    route_rejoin_progress_term = reward_weights.route_rejoin_progress * float(np.clip(route_rejoin_progress_delta, -1.0, 1.0))
     reward_components = {
         "goal": reward_weights.goal if goal_now else 0.0,
         "progress": progress_term,
@@ -81,5 +89,7 @@ def compute_reward(
         "effort": reward_weights.effort * effort_scale,
         "time": reward_weights.time,
         "remaining_distance": remaining_distance_term,
+        "bypass_clearance_progress": bypass_clearance_progress_term,
+        "route_rejoin_progress": route_rejoin_progress_term,
     }
     return float(sum(reward_components.values())), reward_components

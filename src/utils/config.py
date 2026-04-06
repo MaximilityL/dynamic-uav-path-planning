@@ -70,6 +70,8 @@ class EnvironmentConfig:
             "timeout": -8.0,
             "timeout_distance": -20.0,
             "remaining_distance": 0.0,
+            "bypass_clearance_progress": 0.0,
+            "route_rejoin_progress": 0.0,
             "stall": 0.0,
             "stall_window_steps": 0,
             "stall_progress_threshold": 0.0,
@@ -156,7 +158,7 @@ class Config:
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     visualization: VisualizationConfig = field(default_factory=VisualizationConfig)
     name: str = "dynamic_uav_path_planning"
-    version: str = "1.0.4"
+    version: str = "1.0.6"
     description: str = "Main PPO+GNN config for single-UAV dynamic obstacle avoidance"
     tags: list = field(default_factory=list)
 

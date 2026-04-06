@@ -35,11 +35,15 @@ def summarize_episodes(episode_metrics: List[Dict[str, object]]) -> Dict[str, fl
             "avg_path_length": 0.0,
             "avg_episode_duration": 0.0,
             "avg_time_to_goal": 0.0,
+            "avg_distance_to_goal": 0.0,
+            "avg_route_line_lateral_error": 0.0,
             "avg_min_obstacle_distance": 0.0,
             "avg_min_clearance": 0.0,
             "avg_control_effort": 0.0,
             "avg_path_efficiency": 0.0,
             "avg_steps": 0.0,
+            "best_distance_to_goal": 0.0,
+            "best_route_line_lateral_error": 0.0,
             "best_episode_return": 0.0,
         }
 
@@ -48,6 +52,11 @@ def summarize_episodes(episode_metrics: List[Dict[str, object]]) -> Dict[str, fl
     collisions = np.asarray([float(item.get("collision", 0.0)) for item in episode_metrics], dtype=np.float32)
     min_distances = np.asarray(
         [float(item.get("min_obstacle_distance", 0.0)) for item in episode_metrics],
+        dtype=np.float32,
+    )
+    distance_to_goal = np.asarray([float(item.get("distance_to_goal", 0.0)) for item in episode_metrics], dtype=np.float32)
+    route_line_lateral_error = np.asarray(
+        [float(item.get("route_line_lateral_error", 0.0)) for item in episode_metrics],
         dtype=np.float32,
     )
     min_clearances = np.asarray([float(item.get("min_clearance", 0.0)) for item in episode_metrics], dtype=np.float32)
@@ -68,10 +77,14 @@ def summarize_episodes(episode_metrics: List[Dict[str, object]]) -> Dict[str, fl
         "avg_path_length": float(path_lengths.mean()),
         "avg_episode_duration": float(durations.mean()),
         "avg_time_to_goal": time_to_goal,
+        "avg_distance_to_goal": float(distance_to_goal.mean()),
+        "avg_route_line_lateral_error": float(route_line_lateral_error.mean()),
         "avg_min_obstacle_distance": float(min_distances.mean()),
         "avg_min_clearance": float(min_clearances.mean()),
         "avg_control_effort": float(control_efforts.mean()),
         "avg_path_efficiency": float(efficiencies.mean()),
         "avg_steps": float(steps.mean()),
+        "best_distance_to_goal": float(distance_to_goal.min()),
+        "best_route_line_lateral_error": float(route_line_lateral_error.min()),
         "best_episode_return": float(returns.max()),
     }

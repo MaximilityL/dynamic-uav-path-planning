@@ -2,6 +2,11 @@
 
 All notable changes to this project are recorded here.
 
+## [1.0.6] - 2026-04-06
+
+- Added the new bypass curriculum presets, including `default_curriculum_bypass_v3`, plus rejoin-aware reward and teacher guidance so target-stage policies are pushed to turn back toward the route instead of staying committed to one heading.
+- Improved zero-success recovery and checkpoint selection for target stages, and refreshed the project metadata to `1.0.6`.
+
 ## [1.0.4] - 2026-04-06
 
 - Renamed the active training presets to `default_curriculum.yml` and `default_post_commit.yaml`, updated the default CLI config paths, and isolated helper presets into dedicated output folders.

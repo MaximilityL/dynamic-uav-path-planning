@@ -51,12 +51,14 @@ def _reset_training_artifacts(layout: Dict[str, Path]) -> None:
         shutil.rmtree(stage_checkpoint_dir)
 
 
-def _checkpoint_score(summary: Dict[str, float], stage_index: int = 0) -> tuple[float, float, float, float]:
+def _checkpoint_score(summary: Dict[str, float], stage_index: int = 0) -> tuple[float, float, float, float, float, float]:
     """Score evaluation summaries for best-checkpoint selection."""
     return (
         float(summary.get("success_rate", 0.0)),
         float(stage_index),
         -float(summary.get("collision_rate", 0.0)),
+        -float(summary.get("avg_distance_to_goal", 0.0)),
+        -float(summary.get("avg_route_line_lateral_error", 0.0)),
         float(summary.get("avg_episode_return", 0.0)),
     )
 
@@ -507,7 +509,11 @@ def _apply_stage_entry_optimizer_reset(
     if not bool(reset_settings.get("active", False)):
         return None
 
-    learning_rates = agent.reset_optimizer()
+    default_learning_rates = agent.default_learning_rates()
+    learning_rates = agent.reset_optimizer(
+        actor_lr=float(default_learning_rates["actor"]),
+        critic_lr=float(default_learning_rates["critic"]),
+    )
     lr_multiplier = float(reset_settings.get("lr_multiplier", 1.0))
     if lr_multiplier != 1.0:
         learning_rates = agent.scale_learning_rates(lr_multiplier)
@@ -669,6 +675,7 @@ def _run_stage_demo_pretrain(
     train_episode_before: int,
     progress_callback: Optional[Callable[[Dict[str, object]], None]] = None,
     stage_episode_before: int = 0,
+    seed_salt: int = 0,
 ) -> Optional[Dict[str, object]]:
     """Run one stage-entry teacher-demo pretraining pass when configured."""
     pretrain_settings = _stage_bc_demo_pretrain_settings(config, stage_name=stage_name)
@@ -679,6 +686,7 @@ def _run_stage_demo_pretrain(
         int(stage_config.environment.seed)
         + int(pretrain_settings.get("seed_offset", 200_000))
         + int(stage_index) * 10_000
+        + int(seed_salt)
     )
     _emit_progress(
         progress_callback,
@@ -698,6 +706,7 @@ def _run_stage_demo_pretrain(
             "gate_signal": str(pretrain_settings["gate_signal"]),
             "normalize_target_action": float(bool(pretrain_settings["normalize_target_action"])),
             "post_pretrain_action_std": float(pretrain_settings.get("post_pretrain_action_std", 0.0)),
+            "seed_salt": int(seed_salt),
         },
     )
 
@@ -727,6 +736,7 @@ def _run_stage_demo_pretrain(
         "stage_episode_before": int(stage_episode_before),
         "seed_base": int(seed_base),
         "seed_offset": int(pretrain_settings.get("seed_offset", 200_000)),
+        "seed_salt": int(seed_salt),
         "configured_demo_episodes": int(pretrain_settings["episodes"]),
         "configured_epochs": int(pretrain_settings["epochs"]),
         "configured_batch_size": int(pretrain_settings["batch_size"]),
@@ -914,7 +924,7 @@ def _stage_tracking_state(layout: Dict[str, Path], *, stage_index: int, stage_na
     return {
         "stage_index": int(stage_index),
         "stage_name": str(stage_name),
-        "best_eval_score": (-float("inf"), -float("inf"), -float("inf"), -float("inf")),
+        "best_eval_score": (-float("inf"), -float("inf"), -float("inf"), -float("inf"), -float("inf"), -float("inf")),
         "best_eval": None,
         "best_train_episode": 0,
         "best_stage_episode": 0,
@@ -978,6 +988,8 @@ def _serialize_stage_best(stage_state: Dict[str, object]) -> Dict[str, object]:
         "best_collision_rate": float(best_eval.get("collision_rate", 0.0)),
         "best_avg_return": float(best_eval.get("avg_episode_return", 0.0)),
         "best_avg_episode_return": float(best_eval.get("avg_episode_return", 0.0)),
+        "best_avg_distance_to_goal": float(best_eval.get("avg_distance_to_goal", 0.0)),
+        "best_avg_route_line_lateral_error": float(best_eval.get("avg_route_line_lateral_error", 0.0)),
         "best_train_episode": int(stage_state.get("best_train_episode", 0)),
         "best_stage_episode": int(stage_state.get("best_stage_episode", 0)),
         "best_eval_index": int(stage_state.get("best_eval_index", 0)),
@@ -1030,6 +1042,7 @@ def _apply_stage_plateau_recovery(
 
     pretrain_record = None
     if bool(protection.get("rerun_stage_demo_pretrain", False)):
+        recovery_seed_salt = 1_000 * (int(stage_state.get("plateau_recovery_count", 0)) + 1)
         pretrain_record = _run_stage_demo_pretrain(
             config=config,
             layout=layout,
@@ -1041,6 +1054,7 @@ def _apply_stage_plateau_recovery(
             train_episode_before=train_episode_before,
             stage_episode_before=stage_episode,
             progress_callback=progress_callback,
+            seed_salt=recovery_seed_salt,
         )
 
     stage_state["plateau_recovery_count"] = int(stage_state.get("plateau_recovery_count", 0)) + 1
@@ -1253,7 +1267,7 @@ def train_agent(
     pretrain_history: List[Dict[str, object]] = []
     best_eval_summary: Optional[Dict[str, float]] = None
     latest_eval_summary: Optional[Dict[str, float]] = None
-    best_eval_score = (-float("inf"), -float("inf"), -float("inf"), -float("inf"))
+    best_eval_score = (-float("inf"), -float("inf"), -float("inf"), -float("inf"), -float("inf"), -float("inf"))
     last_update_metrics = {
         "actor_loss": 0.0,
         "critic_loss": 0.0,
@@ -1487,9 +1501,13 @@ def train_agent(
                     stage_state=stage_state,
                     protection=stage_regression_protection,
                 )
+                plateau_tracking_enabled = bool(stage_regression_protection.get("plateau_recovery_enabled", False))
+                has_stage_best = stage_state.get("best_eval") is not None
                 if stage_best_updated:
                     stage_state["bad_eval_streak"] = 0
                 elif bool(regression_signal["bad"]):
+                    stage_state["bad_eval_streak"] = int(stage_state.get("bad_eval_streak", 0)) + 1
+                elif plateau_tracking_enabled and has_stage_best:
                     stage_state["bad_eval_streak"] = int(stage_state.get("bad_eval_streak", 0)) + 1
                 else:
                     stage_state["bad_eval_streak"] = 0
@@ -1558,35 +1576,35 @@ def train_agent(
                         stage_regression_events.append(rollback_event)
                         append_jsonl(layout["train"] / "stage_regression_events.jsonl", rollback_event)
                         _emit_progress(progress_callback, rollback_event)
-                    elif bool(stage_regression_protection.get("plateau_recovery_enabled", False)):
-                        plateau_recovery = _apply_stage_plateau_recovery(
-                            config=config,
-                            layout=layout,
-                            env=env,
-                            agent=agent,
-                            stage_state=stage_state,
-                            stage_index=current_stage_index,
-                            stage_name=current_stage_name,
-                            stage_episode=stage_episode,
-                            stage_eval_index=stage_eval_index,
-                            stage_config=current_stage_config,
-                            train_episode_before=episode_number,
-                            protection=stage_regression_protection,
-                            progress_callback=progress_callback,
-                        )
-                        if plateau_recovery is not None:
-                            plateau_event = dict(plateau_recovery["event"])
-                            stage_regression_events.append(plateau_event)
-                            append_jsonl(layout["train"] / "stage_regression_events.jsonl", plateau_event)
-                            _emit_progress(progress_callback, plateau_event)
-                            pretrain_record = plateau_recovery.get("pretrain_record")
-                            if pretrain_record is not None:
-                                pretrain_history.append(pretrain_record)
-                                save_json(layout["train"] / "pretrain_summary.json", {"runs": pretrain_history})
-                            stage_success_streak = 0
-                            plateau_recovery_applied = True
-                            if bool(plateau_recovery.get("reset_stage_episode", False)):
-                                stage_start_episode = episode_number + 1
+                if not rollback_applied and bool(stage_regression_protection.get("plateau_recovery_enabled", False)):
+                    plateau_recovery = _apply_stage_plateau_recovery(
+                        config=config,
+                        layout=layout,
+                        env=env,
+                        agent=agent,
+                        stage_state=stage_state,
+                        stage_index=current_stage_index,
+                        stage_name=current_stage_name,
+                        stage_episode=stage_episode,
+                        stage_eval_index=stage_eval_index,
+                        stage_config=current_stage_config,
+                        train_episode_before=episode_number,
+                        protection=stage_regression_protection,
+                        progress_callback=progress_callback,
+                    )
+                    if plateau_recovery is not None:
+                        plateau_event = dict(plateau_recovery["event"])
+                        stage_regression_events.append(plateau_event)
+                        append_jsonl(layout["train"] / "stage_regression_events.jsonl", plateau_event)
+                        _emit_progress(progress_callback, plateau_event)
+                        pretrain_record = plateau_recovery.get("pretrain_record")
+                        if pretrain_record is not None:
+                            pretrain_history.append(pretrain_record)
+                            save_json(layout["train"] / "pretrain_summary.json", {"runs": pretrain_history})
+                        stage_success_streak = 0
+                        plateau_recovery_applied = True
+                        if bool(plateau_recovery.get("reset_stage_episode", False)):
+                            stage_start_episode = episode_number + 1
 
                 eval_record = {
                     "train_episode": episode_number,

@@ -126,6 +126,11 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self.best_progress_ratio = 0.0
         self.best_goal_proximity_score = 0.0
         self.progress_milestones_hit: set[int] = set()
+        self.prev_blocking_clearance_score = 1.0
+        self.prev_bypass_active = False
+        self.prev_rejoin_active = False
+        self.prev_route_progress_ratio = 0.0
+        self.prev_route_line_lateral_error = 0.0
         self._debug_body_ids: List[int] = []
 
         self._set_seed(seed)
@@ -303,6 +308,22 @@ class DynamicAirspaceEnv(BaseEnvironment):
             resolved_budget = min(resolved_budget, self.auto_time_budget_max_steps)
         return max(resolved_budget, 1)
 
+    def _route_line_metrics(self, drone_position: np.ndarray) -> tuple[float, float]:
+        """Return progress along the sampled start-goal line and lateral deviation from it."""
+        route_start = np.asarray(self.initial_positions[0], dtype=np.float32)
+        route_vector = np.asarray(self.goal_position - route_start, dtype=np.float32)
+        route_length = float(np.linalg.norm(route_vector))
+        if route_length <= 1e-6:
+            return 0.0, 0.0
+        route_direction = route_vector / route_length
+        from_start = np.asarray(drone_position - route_start, dtype=np.float32)
+        along_track = float(np.dot(from_start, route_direction))
+        along_track = float(np.clip(along_track, 0.0, route_length))
+        closest_point = route_start + along_track * route_direction
+        lateral_error = float(np.linalg.norm(np.asarray(drone_position - closest_point, dtype=np.float32)))
+        progress_ratio = float(np.clip(along_track / route_length, 0.0, 1.5))
+        return progress_ratio, lateral_error
+
     def _stall_penalty(self, *, distance_to_goal: float, goal_now: bool) -> float:
         """Penalize late-episode plateaus that fail to make enough net progress."""
         if goal_now:
@@ -416,6 +437,7 @@ class DynamicAirspaceEnv(BaseEnvironment):
             obstacle_positions=self.obstacle_positions,
             action_low=self.action_space.low,
             action_high=self.action_space.high,
+            route_start_position=np.asarray(self.initial_positions[0], dtype=np.float32),
             teacher_config=self.teacher_config,
         )
 
@@ -445,6 +467,8 @@ class DynamicAirspaceEnv(BaseEnvironment):
         drone_position, _ = self._drone_position_velocity()
         info = {
             "distance_to_goal": float(np.linalg.norm(self.goal_position - drone_position)),
+            "route_line_lateral_error": float(self.prev_route_line_lateral_error),
+            "route_progress_ratio": float(self.prev_route_progress_ratio),
             "min_obstacle_distance": float(self.min_obstacle_distance),
             "min_clearance": float(self.min_clearance),
             "goal_reached": float(self.goal_reached),
@@ -504,6 +528,12 @@ class DynamicAirspaceEnv(BaseEnvironment):
         self.start_to_goal_distance = float(np.linalg.norm(self.goal_position - drone_position))
         self.max_episode_steps = self._resolve_episode_step_budget(self.start_to_goal_distance)
         self.prev_distance_to_goal = self.start_to_goal_distance
+        initial_teacher_guidance = self._teacher_guidance(drone_position)
+        self.prev_blocking_clearance_score = float(initial_teacher_guidance.get("blocking_clearance_score", 1.0))
+        self.prev_bypass_active = bool(initial_teacher_guidance.get("bypass_active", False))
+        self.prev_rejoin_active = bool(initial_teacher_guidance.get("rejoin_active", False))
+        self.prev_route_progress_ratio = float(initial_teacher_guidance.get("route_progress_ratio", 0.0))
+        self.prev_route_line_lateral_error = float(initial_teacher_guidance.get("route_line_lateral_error", 0.0))
         self.distance_to_goal_history = [self.start_to_goal_distance]
         self.best_progress_ratio = 0.0
         self.best_goal_proximity_score = 0.0
@@ -519,7 +549,8 @@ class DynamicAirspaceEnv(BaseEnvironment):
         """Advance the PyBullet sim and update moving obstacles."""
         action_array = self._normalize_action(action)
         previous_position, _ = self._drone_position_velocity()
-        teacher_action = np.asarray(self._teacher_guidance(previous_position)["action"], dtype=np.float32)
+        previous_teacher_guidance = self._teacher_guidance(previous_position)
+        teacher_action = np.asarray(previous_teacher_guidance["action"], dtype=np.float32)
         self.pybullet_env.step(action_array.reshape(1, -1))
         self.obstacle_positions, self.obstacle_velocities = advance_obstacles(
             self.obstacle_positions,
@@ -546,6 +577,25 @@ class DynamicAirspaceEnv(BaseEnvironment):
         goal_now = bool(distance_to_goal <= self.goal_tolerance)
         clearance_margin = min_obstacle_distance - safety_distance
         remaining_ratio = float(distance_to_goal / max(self.start_to_goal_distance, 1e-6))
+        current_teacher_guidance = self._teacher_guidance(drone_position)
+        current_blocking_clearance_score = float(current_teacher_guidance.get("blocking_clearance_score", 1.0))
+        current_bypass_active = bool(current_teacher_guidance.get("bypass_active", False))
+        current_rejoin_active = bool(current_teacher_guidance.get("rejoin_active", False))
+        current_route_progress_ratio = float(current_teacher_guidance.get("route_progress_ratio", 0.0))
+        current_route_line_lateral_error = float(current_teacher_guidance.get("route_line_lateral_error", 0.0))
+        bypass_clearance_progress_delta = 0.0
+        if self.prev_bypass_active or current_bypass_active:
+            bypass_clearance_progress_delta = current_blocking_clearance_score - float(self.prev_blocking_clearance_score)
+        route_rejoin_progress_delta = 0.0
+        if self.prev_rejoin_active or current_rejoin_active:
+            lateral_scale = max(
+                float(self.teacher_config.get("lateral_avoidance_radius", 1.0)),
+                float(self.goal_tolerance),
+                0.25,
+            )
+            route_rejoin_progress_delta = (
+                float(self.prev_route_line_lateral_error) - current_route_line_lateral_error
+            ) / lateral_scale
         reward, reward_components = compute_reward(
             reward_weights=self.reward_weights,
             goal_now=goal_now,
@@ -554,6 +604,8 @@ class DynamicAirspaceEnv(BaseEnvironment):
             clearance_margin=clearance_margin,
             action_array=action_array,
             remaining_distance_ratio=remaining_ratio,
+            bypass_clearance_progress_delta=bypass_clearance_progress_delta,
+            route_rejoin_progress_delta=route_rejoin_progress_delta,
         )
         self.distance_to_goal_history.append(distance_to_goal)
         frontier_term = self._frontier_progress_bonus(distance_to_goal=distance_to_goal, clearance_margin=clearance_margin)
@@ -592,6 +644,11 @@ class DynamicAirspaceEnv(BaseEnvironment):
             reward_components["teacher"] = teacher_bonus
 
         self.prev_distance_to_goal = distance_to_goal
+        self.prev_blocking_clearance_score = current_blocking_clearance_score
+        self.prev_bypass_active = current_bypass_active
+        self.prev_rejoin_active = current_rejoin_active
+        self.prev_route_progress_ratio = current_route_progress_ratio
+        self.prev_route_line_lateral_error = current_route_line_lateral_error
         self.goal_reached = self.goal_reached or goal_now
         self.collision_occurred = self.collision_occurred or collision_now
         self.min_obstacle_distance = min(self.min_obstacle_distance, min_obstacle_distance)
@@ -621,6 +678,9 @@ class DynamicAirspaceEnv(BaseEnvironment):
             "episode_return": float(self.episode_return),
             "success": float(self.goal_reached),
             "collision": float(self.collision_occurred),
+            "distance_to_goal": float(self.prev_distance_to_goal),
+            "route_line_lateral_error": float(self.prev_route_line_lateral_error),
+            "route_progress_ratio": float(self.prev_route_progress_ratio),
             "min_obstacle_distance": float(self.min_obstacle_distance),
             "min_clearance": float(self.min_clearance),
             "path_length": float(self.path_length),

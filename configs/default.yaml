@@ -1,5 +1,5 @@
 name: "dynamic_uav_path_planning_default"
-version: "1.0.4"
+version: "1.0.6"
 description: "Lightweight single-stage PPO+GNN baseline for single-UAV dynamic obstacle avoidance"
 tags: ["uav", "path-planning", "dynamic-airspace", "pybullet", "gnn", "ppo"]
 
