@@ -1,5 +1,5 @@
 name: "dynamic_uav_path_planning_easy_train"
-version: "1.0.6"
+version: "1.1.0"
 description: "Easier PPO+GNN preset with dedicated outputs for quick learning-signal validation"
 tags: ["uav", "path-planning", "dynamic-airspace", "pybullet", "gnn", "ppo", "easy"]
 

@@ -158,7 +158,7 @@ class Config:
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     visualization: VisualizationConfig = field(default_factory=VisualizationConfig)
     name: str = "dynamic_uav_path_planning"
-    version: str = "1.0.6"
+    version: str = "1.1.0"
     description: str = "Main PPO+GNN config for single-UAV dynamic obstacle avoidance"
     tags: list = field(default_factory=list)
 

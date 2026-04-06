@@ -2,6 +2,11 @@
 
 All notable changes to this project are recorded here.
 
+## [1.1.0] - 2026-04-06
+
+- Promoted the retained bypass-v3 curriculum to `configs/default.yaml`, moved its kept run artifacts under the `default` output paths, and refreshed the default plots.
+- Removed the extra bypass config variants and their stale checkpoints, results, and logs.
+
 ## [1.0.6] - 2026-04-06
 
 - Added the new bypass curriculum presets, including `default_curriculum_bypass_v3`, plus rejoin-aware reward and teacher guidance so target-stage policies are pushed to turn back toward the route instead of staying committed to one heading.
