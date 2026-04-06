@@ -1,131 +1,117 @@
 # Dynamic UAV Path Planning
 
-Version: `1.1.1`
+Version: `1.1.2`
 
-This repository is a research codebase for single-UAV path planning in dynamic obstacle fields. It combines a PyBullet-backed UAV, fixed-size dense graph observations, and a readable PPO baseline that is optimized for iteration on curriculum design, reward shaping, teacher guidance, and training infrastructure.
+This project studies learning-based UAV navigation in dynamic environments. The agent sees the scene as a graph and is trained with PPO plus curriculum and teacher-guided training aids.
 
-## Current Repo Status
+The repo already contains a checked-in `default.yaml` run under `checkpoints/default` and `results/default`. If you want to reproduce the same kind of outputs shown in the presentation, use the guide below.
 
-- The canonical full fresh curriculum is `configs/default_curriculum.yml`.
-  It is the preserved `v6` baseline, solves the bridge and medium stages, reaches `target_default_intro`, and records a stage-best intro success of `0.5` with `0.0` collision, but it does not advance to `target_default`.
-- The canonical target-stage continuation is `configs/default_post_commit.yaml`.
-  It is the preserved `v15` post-commit branch, resumes from the default curriculum intro checkpoint, and keeps the aggressive target-stage supervision stack, but `target_default` is still unsolved.
-- The helper presets now kept in the repo are `configs/default.yaml`, `configs/debug.yaml`, `configs/easy_train.yaml`, and `configs/hard_obstacles.yaml`.
+## Quick Guide: Replicate The Presentation Results
 
-The repo is therefore strongest today as:
-
-- a working research scaffold
-- a reproducible curriculum/evaluation pipeline
-- a target-stage experimentation platform
-
-It is not yet a repo with a confirmed stable `target_default` solution.
-
-## What The Repo Includes
-
-- a PyBullet-backed dynamic airspace environment
-- fixed-size dense graph observations
-- a graph PPO baseline in plain PyTorch
-- heuristic teacher reward and teacher-action supervision hooks
-- stage-aware behavior-cloning warm start
-- success-filtered teacher-demo pretraining
-- stage-local best checkpoints, rollback, and plateau recovery
-- training, evaluation, plotting, and smoke-test CLIs
-- result artifacts, trajectory export, and tests
-
-## Recommended Entry Points
-
-Smoke-test the stack:
+### 1. Install
 
 ```bash
-python scripts/smoke_test.py --config configs/debug.yaml
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install -e .
 ```
 
-Run the canonical full fresh curriculum baseline:
+### 2. Run The Main Experiment
 
 ```bash
-python scripts/train.py --config configs/default_curriculum.yml
+python scripts/train.py --config configs/default.yaml
 ```
 
-Evaluate the best intro checkpoint from that run:
+You can also run:
+
+```bash
+python scripts/train.py
+```
+
+This is the main experiment used for the presentation-style results. It writes to:
+
+- `checkpoints/default`
+- `results/default/train`
+- `results/default/plots`
+
+The key plot files are:
+
+- `results/default/plots/training_overview.png`
+- `results/default/plots/evaluation_overview.png`
+- `results/default/plots/training_dynamics.png`
+- `results/default/plots/stage_timeline.png`
+
+### 3. Generate The “Best Stage” And “Required Stage” Figures
+
+```bash
+python scripts/generate_stage_showcase.py \
+  --config configs/default.yaml \
+  --no-video
+```
+
+This creates the same style of result figures used in the presentation:
+
+- `results/default/showcase/target_bypass_intro_v2/best_episode_2d.png`
+- `results/default/showcase/target_bypass_intro_v2/best_episode_3d.png`
+- `results/default/showcase/target_default/best_episode_2d.png`
+- `results/default/showcase/target_default/best_episode_3d.png`
+- `results/default/showcase/showcase_summary.json`
+
+If `ffmpeg` is installed, remove `--no-video` to also export MP4 replays.
+
+### 4. Optional: Rebuild Plots Or Re-Evaluate A Checkpoint
+
+Rebuild the training plots from saved history:
+
+```bash
+python scripts/plot_results.py \
+  --history results/default/train/history.jsonl \
+  --output-dir results/default/plots
+```
+
+Run a deterministic evaluation for the main checkpoint:
 
 ```bash
 python scripts/evaluate.py \
-  --config configs/default_curriculum.yml \
-  --model checkpoints/default_curriculum/stages/target_default_intro/best_model.pth \
-  --stage-name target_default_intro
+  --model checkpoints/default/best_model.pth
 ```
 
-Run the canonical target-only continuation:
+## Project In One Minute
 
-```bash
-python scripts/train.py --config configs/default_post_commit.yaml
-```
+- One UAV navigates among moving obstacles in a bounded 3D airspace.
+- The environment uses PyBullet through `gym-pybullet-drones`.
+- Control runs at 30 Hz and physics at 240 Hz.
+- Observations are graph-structured.
+- The policy is a graph-based PPO actor-critic.
+- Training is helped by curriculum learning, teacher reward, behavior-cloning warm start, demo pretraining, and regression protection.
 
-## Repository Layout
+## Default Run Snapshot
 
-```text
-dynamic-uav-path-planning/
-├── CHANGELOG.md
-├── VERSION
-├── README.md
-├── configs/
-├── docs/
-├── scripts/
-├── src/
-├── tests/
-├── checkpoints/
-├── logs/
-├── results/
-├── pyproject.toml
-└── requirements.txt
-```
+The checked-in `default.yaml` run matches the main conclusion of the presentation: the policy learns meaningful intermediate navigation behavior, but it does not yet solve the hardest required stage reliably.
 
-Key script entrypoints:
+- Best reached stage: `target_bypass_intro_v2`
+- Showcase evaluation on that stage: `11/12` successes, `1/12` collision, average return `96.79`
+- Required stage: `target_default`
+- Showcase evaluation on that stage: `0/12` successes, average return `-78.79`
 
-- `scripts/train.py`
-- `scripts/evaluate.py`
-- `scripts/render_first_eval_episode.py`
-- `scripts/plot_results.py`
-- `scripts/smoke_test.py`
+## Selected Results
 
-## Current Training Stack
+### Training Curves
 
-The active stack now supports:
+![Training overview](results/default/plots/training_overview.png)
 
-- per-stage curriculum overrides
-- deterministic periodic evaluation during training
-- model-only resume with optional optimizer reset
-- stage-local best checkpoints
-- regression detection and rollback
-- plateau recovery with optional demo replay
-- behavior-cloning warm start from the heuristic teacher
-- teacher-demo pretraining with success filtering
-- post-pretrain evaluation capture
-- optional post-pretrain action-std reduction
-- richer terminal logging for training, evaluation, and pretraining
+The default run learns strong early and intermediate behavior, then becomes unstable as the curriculum reaches the hardest stages.
 
-## Current Limits
+### Best Reached Stage
 
-- single UAV only
-- fixed obstacle count within a curriculum
-- analytic moving-sphere obstacles, not full multi-agent traffic simulation
-- no maps, no-fly zones, or airspace rules
-- no confirmed stable `target_default` solution yet
+![Best reached stage](results/default/showcase/target_bypass_intro_v2/best_episode_2d.png)
 
-## Docs
+This is the best reached stage from the default run. It shows successful bypass behavior around moving obstacles and corresponds to the strongest stage reached in the presentation-style summary.
 
-The current project snapshot is documented in:
+### Required Stage
 
-- `docs/current_status_report.md`
-- `docs/rl_status_report_2026-04-06.md`
-- `docs/architecture.md`
-- `docs/experiment_workflow.md`
-- `docs/training_upgrade_summary.md`
-- `docs/using_repo_for_learning_based_uav_path_planning.md`
+![Required stage](results/default/showcase/target_default/best_episode_2d.png)
 
-## Near-Term Direction
-
-- preserve the graph observation contract
-- keep the train/eval workflow reusable
-- stabilize target-stage behavior around lateral bypass
-- reach a reliable `target_default` continuation from the current intro checkpoint sources
+This is the required target stage. The default run still falls short here, which is why the README and the presentation both frame the project as a strong research scaffold rather than a fully solved benchmark.

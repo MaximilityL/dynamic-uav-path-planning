@@ -287,7 +287,7 @@ def _auto_plot_training_results(config) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train the dynamic UAV path-planning scaffold")
-    parser.add_argument("--config", type=str, default="configs/default_curriculum.yml", help="Configuration file")
+    parser.add_argument("--config", type=str, default="configs/default.yaml", help="Configuration file")
     parser.add_argument("--resume", type=str, help="Checkpoint to resume from")
     parser.add_argument(
         "--reset-optimizer-on-resume",

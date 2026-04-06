@@ -1,0 +1,22 @@
+{
+  "stage_index": 2,
+  "stage_name": "bridge_entry",
+  "train_episode": 160,
+  "stage_episode": 80,
+  "eval_index": 4,
+  "num_episodes": 6,
+  "success_rate": 1.0,
+  "collision_rate": 0.0,
+  "avg_episode_return": 103.01764678955078,
+  "avg_path_length": 1.0991088151931763,
+  "avg_episode_duration": 4.72777795791626,
+  "avg_time_to_goal": 4.72777795791626,
+  "avg_min_obstacle_distance": 2.7108259201049805,
+  "avg_min_clearance": 2.360825777053833,
+  "avg_control_effort": 0.689755916595459,
+  "avg_path_efficiency": 1.0,
+  "avg_steps": 141.8333282470703,
+  "best_episode_return": 104.80744934082031,
+  "deterministic": 1.0,
+  "seed_offset": 100000
+}

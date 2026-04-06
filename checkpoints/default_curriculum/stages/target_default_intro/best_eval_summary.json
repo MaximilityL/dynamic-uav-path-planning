@@ -1,0 +1,22 @@
+{
+  "stage_index": 7,
+  "stage_name": "target_default_intro",
+  "train_episode": 680,
+  "stage_episode": 20,
+  "eval_index": 12,
+  "num_episodes": 6,
+  "success_rate": 0.5,
+  "collision_rate": 0.0,
+  "avg_episode_return": 73.55451202392578,
+  "avg_path_length": 4.1286139488220215,
+  "avg_episode_duration": 18.97777557373047,
+  "avg_time_to_goal": 17.288888931274414,
+  "avg_min_obstacle_distance": 0.8127524256706238,
+  "avg_min_clearance": 0.4627523422241211,
+  "avg_control_effort": 0.6605297923088074,
+  "avg_path_efficiency": 0.5,
+  "avg_steps": 569.3333129882812,
+  "best_episode_return": 159.44064331054688,
+  "deterministic": 1.0,
+  "seed_offset": 100000
+}

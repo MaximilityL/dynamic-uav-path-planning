@@ -1,0 +1,32 @@
+{
+  "target_default_intro": {
+    "stage_index": 0,
+    "stage_name": "target_default_intro",
+    "num_evaluations": 18,
+    "best_success_rate": 0.0,
+    "best_collision_rate": 0.0,
+    "best_avg_return": -26.982219696044922,
+    "best_avg_episode_return": -26.982219696044922,
+    "best_train_episode": 70,
+    "best_stage_episode": 70,
+    "best_eval_index": 8,
+    "rollback_count": 0,
+    "plateau_recovery_count": 0,
+    "best_model_path": "checkpoints/default_post_commit/stages/target_default_intro/best_model.pth"
+  },
+  "target_default": {
+    "stage_index": 1,
+    "stage_name": "target_default",
+    "num_evaluations": 0,
+    "best_success_rate": 0.0,
+    "best_collision_rate": 0.0,
+    "best_avg_return": 0.0,
+    "best_avg_episode_return": 0.0,
+    "best_train_episode": 0,
+    "best_stage_episode": 0,
+    "best_eval_index": 0,
+    "rollback_count": 0,
+    "plateau_recovery_count": 0,
+    "best_model_path": "checkpoints/default_post_commit/stages/target_default/best_model.pth"
+  }
+}

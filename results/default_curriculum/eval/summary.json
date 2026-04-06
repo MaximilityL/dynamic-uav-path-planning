@@ -1,0 +1,18 @@
+{
+  "num_episodes": 20,
+  "success_rate": 0.30000001192092896,
+  "collision_rate": 0.0,
+  "avg_episode_return": 59.59660720825195,
+  "avg_path_length": 4.286182880401611,
+  "avg_episode_duration": 19.708332061767578,
+  "avg_time_to_goal": 17.47222137451172,
+  "avg_min_obstacle_distance": 0.7202858924865723,
+  "avg_min_clearance": 0.37028592824935913,
+  "avg_control_effort": 0.6601461172103882,
+  "avg_path_efficiency": 0.30000001192092896,
+  "avg_steps": 591.25,
+  "best_episode_return": 159.44064331054688,
+  "deterministic": 1.0,
+  "seed_offset": 100000,
+  "model_path": "checkpoints/default_curriculum/stages/target_default_intro/best_model.pth"
+}

@@ -1,0 +1,386 @@
+environment:
+  type: dynamic_airspace
+  backend: gym_pybullet_drones
+  num_agents: 1
+  num_dynamic_obstacles: 5
+  obstacle_radius: 0.2
+  goal_tolerance: 0.35
+  collision_distance: 0.15
+  max_episode_steps: 800
+  gui: false
+  observation_type: kin
+  action_type: vel
+  pyb_freq: 240
+  ctrl_freq: 30
+  seed: 7
+  connect_radius: 5.0
+  workspace_bounds:
+  - - -3.0
+    - 3.0
+  - - -3.0
+    - 3.0
+  - - 0.5
+    - 2.5
+  obstacle_speed_range:
+  - 0.12
+  - 0.35
+  auto_time_budget_steps_per_meter: 170.0
+  auto_time_budget_padding: 30
+  auto_time_budget_max_steps: 0
+  scenario_config: {}
+  teacher_config: {}
+  reward_weights:
+    goal: 40.0
+    progress: 8.0
+    progress_negative_scale: 1.0
+    frontier_progress: 0.0
+    commit_bonus_min_clearance: 0.0
+    goal_proximity_bonus: 0.0
+    goal_proximity_radius: 0.0
+    goal_proximity_power: 1.0
+    progress_milestone_bonus: 0.0
+    progress_milestone_thresholds: []
+    progress_milestone_bonus_weights: []
+    collision: -40.0
+    clearance: 0.5
+    clearance_positive_scale: 0.02
+    danger_clearance_threshold: 0.0
+    danger_clearance_penalty: 0.0
+    danger_clearance_power: 1.0
+    effort: -0.005
+    time: -0.01
+    timeout: -8.0
+    timeout_distance: -20.0
+    remaining_distance: 0.0
+    stall: 0.0
+    stall_window_steps: 0
+    stall_progress_threshold: 0.0
+    stall_grace_steps: 0
+    stall_remaining_ratio_threshold: 0.15
+agent:
+  type: graph_ppo
+  encoder_type: gnn
+  node_feature_dim: 10
+  edge_feature_dim: 4
+  global_feature_dim: 4
+  action_dim: 4
+  hidden_dim: 96
+  message_passing_steps: 3
+  lr_actor: 1.5e-05
+  lr_critic: 8.0e-05
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.0005
+  value_coef: 0.5
+  ppo_epochs: 2
+  mini_batch_size: 64
+  rollout_episodes: 8
+  max_grad_norm: 0.5
+  action_std_init: 0.08
+  device: auto
+training:
+  num_episodes: 480
+  save_interval: 10
+  eval_interval: 10
+  checkpoint_dir: checkpoints/default_post_commit
+  log_dir: logs/default_post_commit
+  results_dir: results/default_post_commit
+  moving_average_window: 20
+  eval_episodes: 10
+  print_interval: 5
+  resume:
+    checkpoint_path: checkpoints/default_curriculum/stages/target_default_intro/best_model.pth
+    load_optimizer_state: false
+    load_scheduler_state: false
+    restore_curriculum_progress: false
+  bc_warm_start:
+    enabled: true
+    stages:
+    - target_default_intro
+    - target_default
+    initial_coef: 0.12
+    final_coef: 0.06
+    anneal_episodes: 260
+    teacher_gated_only: true
+    gate_signal: teacher_active
+    normalize_target_action: false
+    stage_overrides:
+      target_default_intro:
+        initial_coef: 0.3
+        final_coef: 0.18
+        anneal_episodes: 320
+        teacher_gated_only: false
+        gate_signal: teacher_active
+      target_default:
+        initial_coef: 0.16
+        final_coef: 0.08
+        anneal_episodes: 360
+        teacher_gated_only: true
+        gate_signal: teacher_active
+  bc_demo_pretrain:
+    enabled: true
+    stages:
+    - target_default_intro
+    - target_default
+    episodes: 96
+    epochs: 16
+    batch_size: 128
+    teacher_gated_only: false
+    gate_signal: teacher_active
+    normalize_target_action: false
+    successful_episodes_only: true
+    fallback_to_all_episodes: true
+    evaluate_after_pretrain: true
+    eval_episodes: 10
+    post_pretrain_action_std: 0.07
+    seed_offset: 200000
+    stage_overrides:
+      target_default_intro:
+        episodes: 128
+        epochs: 24
+        batch_size: 128
+        teacher_gated_only: false
+        gate_signal: teacher_active
+        successful_episodes_only: true
+        fallback_to_all_episodes: true
+        evaluate_after_pretrain: true
+        eval_episodes: 10
+        post_pretrain_action_std: 0.06
+      target_default:
+        episodes: 96
+        epochs: 16
+        batch_size: 128
+        teacher_gated_only: false
+        gate_signal: teacher_active
+        successful_episodes_only: true
+        fallback_to_all_episodes: true
+        evaluate_after_pretrain: true
+        eval_episodes: 8
+        post_pretrain_action_std: 0.07
+  stage_entry_optimizer_reset:
+    enabled: true
+    stages:
+    - target_default_intro
+    - target_default
+    lr_multiplier: 1.0
+    reset_on_initial_stage: true
+    stage_overrides:
+      target_default_intro:
+        lr_multiplier: 1.0
+      target_default:
+        lr_multiplier: 1.0
+  stage_regression_protection:
+    enabled: true
+    activate_after_success_rate: 0.15
+    absolute_drop_threshold: 0.1
+    relative_drop_fraction: 0.25
+    consecutive_bad_evals: 1
+    rollback_on_regression: true
+    rollback_max_per_stage: 2
+    lr_multiplier_after_rollback: 1.0
+    stage_overrides:
+      target_default_intro:
+        activate_after_success_rate: 0.15
+        absolute_drop_threshold: 0.1
+        relative_drop_fraction: 0.25
+        consecutive_bad_evals: 1
+        rollback_max_per_stage: 2
+        lr_multiplier_after_rollback: 1.0
+        plateau_recovery_enabled: true
+        plateau_bad_eval_streak: 2
+        plateau_max_per_stage: 2
+        lr_multiplier_after_plateau_recovery: 1.0
+        rerun_stage_demo_pretrain: true
+        reset_stage_episode_on_plateau_recovery: true
+      target_default:
+        activate_after_success_rate: 0.18
+        absolute_drop_threshold: 0.1
+        relative_drop_fraction: 0.25
+        consecutive_bad_evals: 1
+        rollback_max_per_stage: 2
+        lr_multiplier_after_rollback: 1.0
+        plateau_recovery_enabled: true
+        plateau_bad_eval_streak: 3
+        plateau_max_per_stage: 2
+        lr_multiplier_after_plateau_recovery: 1.0
+        rerun_stage_demo_pretrain: true
+        reset_stage_episode_on_plateau_recovery: true
+  curriculum:
+  - name: target_default_intro
+    min_stage_episodes: 10
+    required_consecutive_evals: 1
+    advance_success_rate: 0.4
+    advance_collision_rate: 0.1
+    environment:
+      goal_tolerance: 0.6
+      obstacle_speed_range:
+      - 0.08
+      - 0.24
+      max_episode_steps: 560
+      auto_time_budget_steps_per_meter: 96.0
+      auto_time_budget_padding: 10
+      auto_time_budget_max_steps: 560
+      scenario_config:
+        route_obstacle_count: 3
+        route_obstacle_progress_range:
+        - 0.35
+        - 0.82
+        route_obstacle_lateral_offset_range:
+        - -0.55
+        - 0.55
+        route_obstacle_vertical_offset_range:
+        - -0.18
+        - 0.18
+        route_obstacle_longitudinal_jitter: 0.06
+        obstacle_start_goal_exclusion_radius: 0.75
+      reward_weights:
+        goal: 84.0
+        progress: 11.0
+        progress_negative_scale: 2.2
+        frontier_progress: 12.0
+        commit_bonus_min_clearance: 0.1
+        goal_proximity_bonus: 16.0
+        goal_proximity_radius: 0.95
+        goal_proximity_power: 2.0
+        progress_milestone_bonus: 0.0
+        progress_milestone_thresholds:
+        - 0.2
+        - 0.4
+        - 0.6
+        - 0.8
+        - 0.9
+        progress_milestone_bonus_weights:
+        - 1.5
+        - 2.5
+        - 4.0
+        - 6.0
+        - 8.0
+        collision: -40.0
+        clearance: 0.5
+        clearance_positive_scale: 0.0
+        danger_clearance_threshold: 0.24
+        danger_clearance_penalty: 1.6
+        danger_clearance_power: 1.5
+        effort: -0.005
+        time: -0.018
+        timeout: -22.0
+        timeout_distance: -48.0
+        remaining_distance: -0.008
+        stall: -0.08
+        stall_window_steps: 28
+        stall_progress_threshold: 0.16
+        stall_grace_steps: 40
+        stall_remaining_ratio_threshold: 0.2
+      teacher_config:
+        enabled: true
+        reward_scale: 0.45
+        episode_bonus_budget: 24.0
+        action_mix: 0.0
+        repulsion_radius: 1.0
+        repulsion_gain: 0.35
+        lateral_avoidance_gain: 1.4
+        lateral_avoidance_radius: 0.9
+        forward_lookahead: 2.6
+        far_speed: 0.82
+        near_speed: 0.46
+        near_goal_distance: 1.0
+        direction_weight: 0.98
+        speed_weight: 0.02
+  - name: target_default
+    min_stage_episodes: 40
+    required_consecutive_evals: 1
+    advance_success_rate: 0.6
+    advance_collision_rate: 0.1
+    environment:
+      goal_tolerance: 0.35
+      obstacle_speed_range:
+      - 0.12
+      - 0.35
+      max_episode_steps: 860
+      auto_time_budget_steps_per_meter: 104.0
+      auto_time_budget_padding: 14
+      auto_time_budget_max_steps: 860
+      reward_weights:
+        goal: 76.0
+        progress: 9.8
+        progress_negative_scale: 2.0
+        frontier_progress: 8.0
+        commit_bonus_min_clearance: 0.15
+        goal_proximity_bonus: 16.0
+        goal_proximity_radius: 0.85
+        goal_proximity_power: 2.0
+        progress_milestone_bonus: 0.0
+        progress_milestone_thresholds:
+        - 0.2
+        - 0.4
+        - 0.6
+        - 0.8
+        - 0.92
+        progress_milestone_bonus_weights:
+        - 1.5
+        - 2.5
+        - 4.0
+        - 6.0
+        - 9.0
+        collision: -40.0
+        clearance: 0.5
+        clearance_positive_scale: 0.0
+        danger_clearance_threshold: 0.28
+        danger_clearance_penalty: 2.0
+        danger_clearance_power: 1.5
+        effort: -0.005
+        time: -0.016
+        timeout: -18.0
+        timeout_distance: -40.0
+        remaining_distance: -0.005
+        stall: -0.04
+        stall_window_steps: 36
+        stall_progress_threshold: 0.14
+        stall_grace_steps: 70
+        stall_remaining_ratio_threshold: 0.24
+      teacher_config:
+        enabled: true
+        reward_scale: 0.32
+        episode_bonus_budget: 14.0
+        action_mix: 0.0
+        repulsion_radius: 1.0
+        repulsion_gain: 0.35
+        lateral_avoidance_gain: 1.0
+        lateral_avoidance_radius: 0.82
+        forward_lookahead: 2.2
+        far_speed: 0.82
+        near_speed: 0.46
+        near_goal_distance: 1.0
+        direction_weight: 0.96
+        speed_weight: 0.04
+evaluation:
+  num_episodes: 20
+  render: false
+  deterministic: true
+  save_trajectories: true
+  output_dir: results/default_post_commit/eval
+visualization:
+  plot_dir: results/default_post_commit/plots
+  trajectory_dir: results/default_post_commit/trajectories
+name: dynamic_uav_path_planning_default_post_commit
+version: 1.0.0
+description: Aggressive target-stage continuation that locks in post-pretrain checkpoints,
+  lowers exploration noise, shortens intro wandering time, and advances from the v6
+  intro checkpoint toward stable target_default
+tags:
+- uav
+- path-planning
+- dynamic-airspace
+- pybullet
+- gnn
+- ppo
+- curriculum
+- teacher
+- target
+- post-commit
+- behavior-cloning
+- demo-pretrain
+- pretrain-eval
+- low-exploration
+- target-intro

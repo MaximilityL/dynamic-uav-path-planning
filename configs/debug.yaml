@@ -1,5 +1,5 @@
 name: "dynamic_uav_path_planning_debug"
-version: "1.1.1"
+version: "1.1.2"
 description: "Tiny smoke/debug run for PPO+GNN path planning checks"
 tags: ["uav", "path-planning", "dynamic-airspace", "pybullet", "gnn", "ppo", "debug"]
 

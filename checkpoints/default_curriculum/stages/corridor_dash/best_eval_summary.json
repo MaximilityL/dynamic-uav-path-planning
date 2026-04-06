@@ -1,0 +1,22 @@
+{
+  "stage_index": 1,
+  "stage_name": "corridor_dash",
+  "train_episode": 80,
+  "stage_episode": 60,
+  "eval_index": 3,
+  "num_episodes": 6,
+  "success_rate": 1.0,
+  "collision_rate": 0.0,
+  "avg_episode_return": 86.4417953491211,
+  "avg_path_length": 0.5133791565895081,
+  "avg_episode_duration": 2.299999952316284,
+  "avg_time_to_goal": 2.299999952316284,
+  "avg_min_obstacle_distance": 3.205932378768921,
+  "avg_min_clearance": 2.8559324741363525,
+  "avg_control_effort": 0.6840207576751709,
+  "avg_path_efficiency": 1.0,
+  "avg_steps": 69.0,
+  "best_episode_return": 90.3838119506836,
+  "deterministic": 1.0,
+  "seed_offset": 100000
+}

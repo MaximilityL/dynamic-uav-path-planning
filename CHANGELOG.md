@@ -2,6 +2,11 @@
 
 All notable changes to this project are recorded here.
 
+## [1.1.2] - 2026-04-06
+
+- Reworked the main README around the presentation narrative, added a quick `default.yaml` replication guide, and embedded the most useful default-run plots and showcase figures.
+- Updated the default train and evaluate CLI entrypoints to use `configs/default.yaml`, promoted the project metadata to `1.1.2`, and started tracking checkpoints and results directly in git.
+
 ## [1.1.1] - 2026-04-06
 
 - Added the stage showcase exporter with 2D and 3D trajectory plots plus GUI video capture for the best reached and wanted stages.

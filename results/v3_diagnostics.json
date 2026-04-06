@@ -1,0 +1,184 @@
+{
+  "checkpoint": {
+    "path": "checkpoints/default_curriculum_bypass_v3/stages/target_bypass_commit_v2/best_model.pth",
+    "metadata": {
+      "episode": 800,
+      "stage_index": 8,
+      "stage_name": "target_bypass_commit_v2",
+      "stage_episode": 20,
+      "stage_eval_index": 1,
+      "evaluation": {
+        "stage_index": 8,
+        "stage_name": "target_bypass_commit_v2",
+        "train_episode": 800,
+        "stage_episode": 20,
+        "eval_index": 1,
+        "num_episodes": 12,
+        "success_rate": 0.4166666567325592,
+        "collision_rate": 0.1666666716337204,
+        "avg_episode_return": 10.393216133117676,
+        "avg_path_length": 3.855778694152832,
+        "avg_episode_duration": 20.322221755981445,
+        "avg_time_to_goal": 19.479999542236328,
+        "avg_distance_to_goal": 1.1328684091567993,
+        "avg_route_line_lateral_error": 0.7432024478912354,
+        "avg_min_obstacle_distance": 0.6142884492874146,
+        "avg_min_clearance": 0.26428845524787903,
+        "avg_control_effort": 0.6613998413085938,
+        "avg_path_efficiency": 0.4068796932697296,
+        "avg_steps": 609.6666870117188,
+        "best_distance_to_goal": 0.737484335899353,
+        "best_route_line_lateral_error": 0.2800185978412628,
+        "best_episode_return": 144.55679321289062,
+        "deterministic": 1.0,
+        "seed_offset": 100000
+      },
+      "recent_training_summary": {
+        "num_episodes": 20,
+        "success_rate": 0.4000000059604645,
+        "collision_rate": 0.10000000149011612,
+        "avg_episode_return": 38.03032684326172,
+        "avg_path_length": 3.677499294281006,
+        "avg_episode_duration": 20.86666488647461,
+        "avg_time_to_goal": 19.541667938232422,
+        "avg_distance_to_goal": 0.9937518239021301,
+        "avg_route_line_lateral_error": 0.36580759286880493,
+        "avg_min_obstacle_distance": 0.664307177066803,
+        "avg_min_clearance": 0.3143071234226227,
+        "avg_control_effort": 0.6074903607368469,
+        "avg_path_efficiency": 0.3936921954154968,
+        "avg_steps": 626.0,
+        "best_distance_to_goal": 0.737022876739502,
+        "best_route_line_lateral_error": 0.062193047255277634,
+        "best_episode_return": 143.12815856933594
+      },
+      "config_name": "dynamic_uav_path_planning_default_curriculum_bypass_v3"
+    }
+  },
+  "test_1_policy_rollouts": {
+    "left": {
+      "n": 10,
+      "success_rate": 0.0,
+      "collision_rate": 0.4,
+      "timeout_rate": 0.6,
+      "lateral_max_mean": 1.01,
+      "lateral_max_max": 1.301
+    },
+    "right": {
+      "n": 8,
+      "success_rate": 0.0,
+      "collision_rate": 0.25,
+      "timeout_rate": 0.75,
+      "lateral_max_mean": 0.934,
+      "lateral_max_max": 1.201
+    },
+    "center": {
+      "n": 2,
+      "success_rate": 1.0,
+      "collision_rate": 0.0,
+      "timeout_rate": 0.0,
+      "lateral_max_mean": 0.901,
+      "lateral_max_max": 0.916
+    }
+  },
+  "test_2_teacher_rollouts": {
+    "left": {
+      "n": 10,
+      "success_rate": 0.9,
+      "collision_rate": 0.0,
+      "timeout_rate": 0.1
+    },
+    "right": {
+      "n": 8,
+      "success_rate": 0.875,
+      "collision_rate": 0.0,
+      "timeout_rate": 0.125
+    },
+    "center": {
+      "n": 2,
+      "success_rate": 1.0,
+      "collision_rate": 0.0,
+      "timeout_rate": 0.0
+    }
+  },
+  "test_3_sensitivity": {
+    "direction_mean": [
+      0.755,
+      0.4825,
+      0.4276
+    ],
+    "direction_std": [
+      0.0607,
+      0.1006,
+      0.0213
+    ],
+    "max_pairwise_angle_deg": 35.38,
+    "median_pairwise_angle_deg": 6.64,
+    "interpretation": "If max_pairwise_angle_deg < 5, encoder is essentially BLIND to obstacle position. If >30, encoder is reactive."
+  },
+  "test_4_history": {
+    "requested_stage": "target_default_intro",
+    "requested_stage_reached": false,
+    "fallback_stage": "target_bypass_commit_v2",
+    "fallback_stage_train_summary": {
+      "stage_name": "target_bypass_commit_v2",
+      "n_episodes_at_stage": 707,
+      "success_rate": 0.072,
+      "collision_rate": 0.089,
+      "timeout_rate": 0.839,
+      "avg_min_clearance": 0.299,
+      "avg_route_lateral_error": 1.275,
+      "avg_distance_to_goal": 1.984,
+      "avg_episode_return": -69.984,
+      "last_stage_episode": 507
+    },
+    "fallback_stage_eval_summary": {
+      "stage_name": "target_bypass_commit_v2",
+      "n_evals": 35,
+      "best_success_rate": 0.417,
+      "best_collision_rate": 0.167,
+      "best_avg_distance_to_goal": 1.133,
+      "best_avg_route_lateral_error": 0.743,
+      "best_avg_min_clearance": 0.264,
+      "latest_stage_episode": 500,
+      "latest_success_rate": 0.0,
+      "latest_collision_rate": 0.0,
+      "latest_avg_distance_to_goal": 2.383,
+      "latest_avg_route_lateral_error": 1.99,
+      "latest_avg_min_clearance": 0.391,
+      "early_success_rate_mean": 0.312,
+      "late_success_rate_mean": 0.0,
+      "early_lateral_error_mean": 0.652,
+      "late_lateral_error_mean": 1.955,
+      "early_clearance_mean": 0.269,
+      "late_clearance_mean": 0.364
+    }
+  },
+  "test_5_symmetry": {
+    "left": {
+      "count": 22,
+      "fraction": 0.44
+    },
+    "right": {
+      "count": 26,
+      "fraction": 0.52
+    },
+    "center": {
+      "count": 2,
+      "fraction": 0.04
+    },
+    "none": {
+      "count": 0,
+      "fraction": 0.0
+    }
+  },
+  "conclusions": [
+    "Teacher solves the symmetric left/right default-intro cases reliably (mean success 0.887), while the v3 policy fails them (mean success 0.000, mean timeout 0.675, mean max lateral excursion 0.972).",
+    "The encoder is not obstacle-blind: sweeping one obstacle changes the deterministic action by up to 35.38 degrees (median 6.64 degrees).",
+    "Reset sampling is roughly symmetric, so the failure is not explained by a left/right data imbalance (left=22, right=26, imbalance=0.083).",
+    "The saved v3 run never reached target_default_intro; it stalled earlier at target_bypass_commit_v2.",
+    "At the fallback stage, success collapsed while safety margin improved: best success 0.417, latest success 0.0, early mean lateral error 0.652, late mean lateral error 1.955, early mean clearance 0.269, late mean clearance 0.364.",
+    "That pattern matches over-avoidance and failed rejoin: the policy becomes safer around obstacles but drifts far off-route and times out instead of committing back to goal.",
+    "The next curriculum should therefore keep v4's visibility/symmetry fixes, but add stronger anti-drift pressure around target_bypass_commit_v2 through target_default: reduce reward for wide bypassing once safe, increase rejoin/remaining-distance pressure, and tighten recovery/teacher support on the stage where collapse starts."
+  ]
+}

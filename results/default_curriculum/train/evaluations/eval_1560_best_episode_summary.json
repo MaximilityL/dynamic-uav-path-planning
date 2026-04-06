@@ -1,0 +1,13 @@
+{
+  "episode_return": 9.259421634908087,
+  "success": 0.0,
+  "collision": 0.0,
+  "min_obstacle_distance": 1.09852933883667,
+  "min_clearance": 0.7485293388366699,
+  "path_length": 4.488123951712623,
+  "start_to_goal_distance": 3.8663716316223145,
+  "steps": 620.0,
+  "control_effort": 0.5692844918177974,
+  "episode_duration": 20.666666666666668,
+  "time_to_goal": null
+}

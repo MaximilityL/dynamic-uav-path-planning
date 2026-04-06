@@ -1,0 +1,22 @@
+{
+  "stage_index": 0,
+  "stage_name": "short_hop_goal_lock",
+  "train_episode": 20,
+  "stage_episode": 20,
+  "eval_index": 1,
+  "num_episodes": 6,
+  "success_rate": 1.0,
+  "collision_rate": 0.0,
+  "avg_episode_return": 72.9540023803711,
+  "avg_path_length": 0.42659273743629456,
+  "avg_episode_duration": 2.0055553913116455,
+  "avg_time_to_goal": 2.0055553913116455,
+  "avg_min_obstacle_distance": 3.1943585872650146,
+  "avg_min_clearance": 2.844358444213867,
+  "avg_control_effort": 0.671876847743988,
+  "avg_path_efficiency": 1.0,
+  "avg_steps": 60.16666793823242,
+  "best_episode_return": 74.3961181640625,
+  "deterministic": 1.0,
+  "seed_offset": 100000
+}

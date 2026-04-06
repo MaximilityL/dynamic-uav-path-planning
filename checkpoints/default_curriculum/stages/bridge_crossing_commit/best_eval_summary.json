@@ -1,0 +1,22 @@
+{
+  "stage_index": 4,
+  "stage_name": "bridge_crossing_commit",
+  "train_episode": 340,
+  "stage_episode": 100,
+  "eval_index": 5,
+  "num_episodes": 6,
+  "success_rate": 1.0,
+  "collision_rate": 0.0,
+  "avg_episode_return": 95.19418334960938,
+  "avg_path_length": 1.852309226989746,
+  "avg_episode_duration": 7.566666126251221,
+  "avg_time_to_goal": 7.566666126251221,
+  "avg_min_obstacle_distance": 2.178825855255127,
+  "avg_min_clearance": 1.8288259506225586,
+  "avg_control_effort": 0.7057623863220215,
+  "avg_path_efficiency": 1.0,
+  "avg_steps": 227.0,
+  "best_episode_return": 96.63607025146484,
+  "deterministic": 1.0,
+  "seed_offset": 100000
+}

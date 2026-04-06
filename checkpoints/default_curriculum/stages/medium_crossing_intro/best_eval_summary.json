@@ -1,0 +1,22 @@
+{
+  "stage_index": 5,
+  "stage_name": "medium_crossing_intro",
+  "train_episode": 380,
+  "stage_episode": 40,
+  "eval_index": 2,
+  "num_episodes": 6,
+  "success_rate": 1.0,
+  "collision_rate": 0.0,
+  "avg_episode_return": 140.1247100830078,
+  "avg_path_length": 2.1065542697906494,
+  "avg_episode_duration": 8.527777671813965,
+  "avg_time_to_goal": 8.527777671813965,
+  "avg_min_obstacle_distance": 1.9916834831237793,
+  "avg_min_clearance": 1.6416834592819214,
+  "avg_control_effort": 0.7064066529273987,
+  "avg_path_efficiency": 1.0,
+  "avg_steps": 255.8333282470703,
+  "best_episode_return": 142.09815979003906,
+  "deterministic": 1.0,
+  "seed_offset": 100000
+}
