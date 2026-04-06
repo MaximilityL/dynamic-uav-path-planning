@@ -121,6 +121,26 @@ class GraphPPOAgent:
         )
         return self.learning_rates()
 
+    def action_std(self) -> np.ndarray:
+        """Return the current policy action standard deviation."""
+        with torch.no_grad():
+            return torch.exp(self.model.log_std).detach().cpu().numpy().astype(np.float32)
+
+    def set_action_std(self, action_std: float | np.ndarray) -> np.ndarray:
+        """Overwrite the policy action standard deviation in-place."""
+        std_array = np.asarray(action_std, dtype=np.float32)
+        if std_array.ndim == 0:
+            std_array = np.full(self.model.log_std.shape, float(std_array), dtype=np.float32)
+        if tuple(std_array.shape) != tuple(self.model.log_std.shape):
+            raise ValueError(
+                f"action_std shape {tuple(std_array.shape)} does not match policy shape {tuple(self.model.log_std.shape)}"
+            )
+        clamped = np.clip(std_array, 1e-4, None)
+        log_std_tensor = torch.as_tensor(np.log(clamped), dtype=self.model.log_std.dtype, device=self.model.log_std.device)
+        with torch.no_grad():
+            self.model.log_std.copy_(log_std_tensor)
+        return self.action_std()
+
     def clear_rollout_buffers(self) -> None:
         """Drop any partially collected rollout data."""
         self._episode_buffer.clear()
@@ -163,6 +183,8 @@ class GraphPPOAgent:
         *,
         observation: GraphObservation,
         action: np.ndarray,
+        teacher_action: np.ndarray | None = None,
+        bc_mask: float = 0.0,
         reward: float,
         done: bool,
         log_prob: float,
@@ -171,6 +193,10 @@ class GraphPPOAgent:
         """Append one transition to the current episode buffer."""
         self._episode_buffer.observations.append({key: np.asarray(val, dtype=np.float32).copy() for key, val in observation.items()})
         self._episode_buffer.actions.append(np.asarray(action, dtype=np.float32).copy())
+        if teacher_action is None:
+            teacher_action = np.zeros_like(action, dtype=np.float32)
+        self._episode_buffer.teacher_actions.append(np.asarray(teacher_action, dtype=np.float32).copy())
+        self._episode_buffer.bc_masks.append(float(bc_mask))
         self._episode_buffer.rewards.append(float(reward))
         self._episode_buffer.dones.append(float(done))
         self._episode_buffer.log_probs.append(float(log_prob))
@@ -194,6 +220,8 @@ class GraphPPOAgent:
 
         self._rollout_buffer.observations.extend(self._episode_buffer.observations)
         self._rollout_buffer.actions.extend(self._episode_buffer.actions)
+        self._rollout_buffer.teacher_actions.extend(self._episode_buffer.teacher_actions)
+        self._rollout_buffer.bc_masks.extend(self._episode_buffer.bc_masks)
         self._rollout_buffer.log_probs.extend(self._episode_buffer.log_probs)
         self._rollout_buffer.returns.extend(returns)
         self._rollout_buffer.advantages.extend(advantages)
@@ -203,22 +231,54 @@ class GraphPPOAgent:
         """Report whether there is data waiting for an update."""
         return len(self._rollout_buffer) > 0
 
-    def update(self) -> Dict[str, float]:
+    def _bc_action_representation(self, actions: torch.Tensor, *, normalize: bool) -> torch.Tensor:
+        """Project actions into the representation used by BC loss."""
+        if not normalize:
+            return actions
+
+        normalized = actions.clone()
+        direction_scale = torch.maximum(self.model.action_high[:-1].abs(), self.model.action_low[:-1].abs()).clamp_min(1e-6)
+        normalized[..., :-1] = normalized[..., :-1] / direction_scale
+        normalized[..., -1] = normalized[..., -1] / self.model.speed_scale.clamp_min(1e-6)
+        return normalized
+
+    def update(
+        self,
+        *,
+        bc_coef: float = 0.0,
+        normalize_bc_target_action: bool = False,
+    ) -> Dict[str, float]:
         """Run a PPO update over the accumulated rollout data."""
         if not self.has_pending_rollout():
-            return {"actor_loss": 0.0, "critic_loss": 0.0, "entropy": 0.0}
+            return {
+                "actor_loss": 0.0,
+                "critic_loss": 0.0,
+                "entropy": 0.0,
+                "bc_loss": 0.0,
+                "bc_nonzero": 0.0,
+                "bc_coef": float(bc_coef),
+                "bc_active_fraction": 0.0,
+                "bc_active_samples": 0.0,
+                "bc_total_samples": 0.0,
+            }
 
         observations = stack_graph_observations(self._rollout_buffer.observations, self.device)
         actions = torch.as_tensor(np.asarray(self._rollout_buffer.actions), dtype=torch.float32, device=self.device)
+        teacher_actions = torch.as_tensor(np.asarray(self._rollout_buffer.teacher_actions), dtype=torch.float32, device=self.device)
+        bc_masks = torch.as_tensor(np.asarray(self._rollout_buffer.bc_masks), dtype=torch.float32, device=self.device)
         old_log_probs = torch.as_tensor(np.asarray(self._rollout_buffer.log_probs), dtype=torch.float32, device=self.device)
         returns = torch.as_tensor(np.asarray(self._rollout_buffer.returns), dtype=torch.float32, device=self.device)
         advantages = torch.as_tensor(np.asarray(self._rollout_buffer.advantages), dtype=torch.float32, device=self.device)
         advantages = (advantages - advantages.mean()) / advantages.std(unbiased=False).clamp_min(1e-6)
 
         batch_size = int(actions.shape[0])
+        bc_coef = float(max(bc_coef, 0.0))
+        bc_active_fraction = float(bc_masks.mean().item()) if batch_size > 0 else 0.0
+        bc_active_samples = float(bc_masks.sum().item()) if batch_size > 0 else 0.0
         actor_losses: List[float] = []
         critic_losses: List[float] = []
         entropies: List[float] = []
+        bc_losses: List[float] = []
 
         for _ in range(self.ppo_epochs):
             permutation = torch.randperm(batch_size, device=self.device)
@@ -226,18 +286,31 @@ class GraphPPOAgent:
                 indices = permutation[start : start + self.mini_batch_size]
                 batch_obs = batch_slice(observations, indices)
                 batch_actions = actions.index_select(0, indices)
+                batch_teacher_actions = teacher_actions.index_select(0, indices)
+                batch_bc_masks = bc_masks.index_select(0, indices)
                 batch_old_log_probs = old_log_probs.index_select(0, indices)
                 batch_returns = returns.index_select(0, indices)
                 batch_advantages = advantages.index_select(0, indices)
 
-                new_log_probs, entropy, values = self.model.evaluate_actions(batch_obs, batch_actions)
+                distribution, values = self.model.distribution_and_value(batch_obs)
+                new_log_probs = distribution.log_prob(batch_actions).sum(dim=-1)
+                entropy = distribution.entropy().sum(dim=-1)
                 ratios = torch.exp(new_log_probs - batch_old_log_probs)
                 unclipped = ratios * batch_advantages
                 clipped = torch.clamp(ratios, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * batch_advantages
                 actor_loss = -torch.min(unclipped, clipped).mean()
                 critic_loss = torch.nn.functional.mse_loss(values, batch_returns)
                 entropy_mean = entropy.mean()
-                loss = actor_loss + self.value_coef * critic_loss - self.entropy_coef * entropy_mean
+                bc_loss = torch.zeros((), device=self.device)
+                if bc_coef > 0.0 and float(batch_bc_masks.sum().item()) > 0.0:
+                    policy_mean = self._bc_action_representation(distribution.mean, normalize=normalize_bc_target_action)
+                    teacher_target = self._bc_action_representation(
+                        batch_teacher_actions,
+                        normalize=normalize_bc_target_action,
+                    )
+                    per_sample_bc_loss = torch.mean((policy_mean - teacher_target) ** 2, dim=-1)
+                    bc_loss = (per_sample_bc_loss * batch_bc_masks).sum() / batch_bc_masks.sum().clamp_min(1.0)
+                loss = actor_loss + self.value_coef * critic_loss - self.entropy_coef * entropy_mean + bc_coef * bc_loss
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -247,12 +320,72 @@ class GraphPPOAgent:
                 actor_losses.append(float(actor_loss.item()))
                 critic_losses.append(float(critic_loss.item()))
                 entropies.append(float(entropy_mean.item()))
+                bc_losses.append(float(bc_loss.item()))
 
         self._rollout_buffer.clear()
         return {
             "actor_loss": float(np.mean(actor_losses)) if actor_losses else 0.0,
             "critic_loss": float(np.mean(critic_losses)) if critic_losses else 0.0,
             "entropy": float(np.mean(entropies)) if entropies else 0.0,
+            "bc_loss": float(np.mean(bc_losses)) if bc_losses else 0.0,
+            "bc_nonzero": float(any(loss > 0.0 for loss in bc_losses)),
+            "bc_coef": float(bc_coef),
+            "bc_active_fraction": bc_active_fraction,
+            "bc_active_samples": bc_active_samples,
+            "bc_total_samples": float(batch_size),
+        }
+
+    def behavior_clone_pretrain(
+        self,
+        *,
+        observations: List[GraphObservation],
+        target_actions: List[np.ndarray],
+        epochs: int,
+        batch_size: int,
+        normalize_target_action: bool = False,
+    ) -> Dict[str, float]:
+        """Run supervised actor pretraining against teacher actions."""
+        if not observations or not target_actions:
+            return {
+                "bc_pretrain_loss": 0.0,
+                "bc_pretrain_epochs": int(max(epochs, 0)),
+                "bc_pretrain_samples": 0.0,
+            }
+
+        observations_tensor = stack_graph_observations(observations, self.device)
+        target_actions_tensor = torch.as_tensor(np.asarray(target_actions), dtype=torch.float32, device=self.device)
+        resolved_batch_size = max(int(batch_size), 1)
+        resolved_epochs = max(int(epochs), 1)
+        dataset_size = int(target_actions_tensor.shape[0])
+        losses: List[float] = []
+
+        for _ in range(resolved_epochs):
+            permutation = torch.randperm(dataset_size, device=self.device)
+            for start in range(0, dataset_size, resolved_batch_size):
+                indices = permutation[start : start + resolved_batch_size]
+                batch_obs = batch_slice(observations_tensor, indices)
+                batch_targets = target_actions_tensor.index_select(0, indices)
+                distribution, _ = self.model.distribution_and_value(batch_obs)
+                predicted_actions = self._bc_action_representation(
+                    distribution.mean,
+                    normalize=normalize_target_action,
+                )
+                target_actions_batch = self._bc_action_representation(
+                    batch_targets,
+                    normalize=normalize_target_action,
+                )
+                loss = torch.mean((predicted_actions - target_actions_batch) ** 2)
+
+                self.optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                self.optimizer.step()
+                losses.append(float(loss.item()))
+
+        return {
+            "bc_pretrain_loss": float(np.mean(losses)) if losses else 0.0,
+            "bc_pretrain_epochs": float(resolved_epochs),
+            "bc_pretrain_samples": float(dataset_size),
         }
 
     def save(self, path: str | Path, metadata: Dict[str, object] | None = None) -> Path:

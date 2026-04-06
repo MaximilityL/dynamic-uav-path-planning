@@ -16,6 +16,8 @@ class EpisodeBuffer:
 
     observations: List[GraphObservation] = field(default_factory=list)
     actions: List[np.ndarray] = field(default_factory=list)
+    teacher_actions: List[np.ndarray] = field(default_factory=list)
+    bc_masks: List[float] = field(default_factory=list)
     rewards: List[float] = field(default_factory=list)
     dones: List[float] = field(default_factory=list)
     log_probs: List[float] = field(default_factory=list)
@@ -25,6 +27,8 @@ class EpisodeBuffer:
         """Drop all stored data."""
         self.observations.clear()
         self.actions.clear()
+        self.teacher_actions.clear()
+        self.bc_masks.clear()
         self.rewards.clear()
         self.dones.clear()
         self.log_probs.clear()
@@ -37,6 +41,8 @@ class RolloutBuffer:
 
     observations: List[GraphObservation] = field(default_factory=list)
     actions: List[np.ndarray] = field(default_factory=list)
+    teacher_actions: List[np.ndarray] = field(default_factory=list)
+    bc_masks: List[float] = field(default_factory=list)
     log_probs: List[float] = field(default_factory=list)
     returns: List[float] = field(default_factory=list)
     advantages: List[float] = field(default_factory=list)
@@ -45,6 +51,8 @@ class RolloutBuffer:
         """Drop all stored data."""
         self.observations.clear()
         self.actions.clear()
+        self.teacher_actions.clear()
+        self.bc_masks.clear()
         self.log_probs.clear()
         self.returns.clear()
         self.advantages.clear()

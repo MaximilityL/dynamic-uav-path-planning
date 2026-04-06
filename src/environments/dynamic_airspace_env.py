@@ -14,7 +14,7 @@ from .base_env import BaseEnvironment
 from .observation import build_dense_graph_observation, minimum_obstacle_distance
 from .reward import RewardWeights, compute_reward
 from .scenario import advance_obstacles, sample_dynamic_obstacles, sample_goal_position, sample_start_position
-from .teacher import heuristic_teacher_action, teacher_alignment_bonus
+from .teacher import heuristic_teacher_guidance, teacher_alignment_bonus
 
 
 def _as_action_type(value: ActionType | str) -> ActionType:
@@ -408,9 +408,9 @@ class DynamicAirspaceEnv(BaseEnvironment):
             return 0.0
         return proximity_weight * score_delta
 
-    def _teacher_action(self, drone_position: np.ndarray) -> np.ndarray:
-        """Return the heuristic teacher action for the current state."""
-        return heuristic_teacher_action(
+    def _teacher_guidance(self, drone_position: np.ndarray) -> Dict[str, object]:
+        """Return the heuristic teacher guidance bundle for the current state."""
+        return heuristic_teacher_guidance(
             drone_position=drone_position,
             goal_position=self.goal_position,
             obstacle_positions=self.obstacle_positions,
@@ -419,10 +419,18 @@ class DynamicAirspaceEnv(BaseEnvironment):
             teacher_config=self.teacher_config,
         )
 
+    def _teacher_action(self, drone_position: np.ndarray) -> np.ndarray:
+        """Return the heuristic teacher action for the current state."""
+        return np.asarray(self._teacher_guidance(drone_position)["action"], dtype=np.float32)
+
+    def teacher_guidance_for_current_state(self) -> Dict[str, object]:
+        """Return teacher guidance and gating metadata for the current simulator state."""
+        drone_position, _ = self._drone_position_velocity()
+        return self._teacher_guidance(drone_position)
+
     def teacher_action_for_current_state(self) -> np.ndarray:
         """Return teacher guidance for the current simulator state."""
-        drone_position, _ = self._drone_position_velocity()
-        return self._teacher_action(drone_position)
+        return np.asarray(self.teacher_guidance_for_current_state()["action"], dtype=np.float32)
 
     def _minimum_obstacle_distance(self, drone_position: np.ndarray) -> float:
         """Return the closest obstacle-center distance."""
@@ -511,7 +519,7 @@ class DynamicAirspaceEnv(BaseEnvironment):
         """Advance the PyBullet sim and update moving obstacles."""
         action_array = self._normalize_action(action)
         previous_position, _ = self._drone_position_velocity()
-        teacher_action = self._teacher_action(previous_position)
+        teacher_action = np.asarray(self._teacher_guidance(previous_position)["action"], dtype=np.float32)
         self.pybullet_env.step(action_array.reshape(1, -1))
         self.obstacle_positions, self.obstacle_velocities = advance_obstacles(
             self.obstacle_positions,

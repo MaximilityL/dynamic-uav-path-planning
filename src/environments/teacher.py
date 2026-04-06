@@ -44,6 +44,29 @@ def heuristic_teacher_action(
     teacher_config: Dict[str, object] | None,
 ) -> np.ndarray:
     """Build a simple goal-seeking action with local obstacle repulsion."""
+    return np.asarray(
+        heuristic_teacher_guidance(
+            drone_position=drone_position,
+            goal_position=goal_position,
+            obstacle_positions=obstacle_positions,
+            action_low=action_low,
+            action_high=action_high,
+            teacher_config=teacher_config,
+        )["action"],
+        dtype=np.float32,
+    )
+
+
+def heuristic_teacher_guidance(
+    *,
+    drone_position: np.ndarray,
+    goal_position: np.ndarray,
+    obstacle_positions: np.ndarray,
+    action_low: np.ndarray,
+    action_high: np.ndarray,
+    teacher_config: Dict[str, object] | None,
+) -> Dict[str, object]:
+    """Build the heuristic teacher action together with gating-friendly metadata."""
     config = dict(DEFAULT_TEACHER_CONFIG)
     if teacher_config:
         config.update(teacher_config)
@@ -55,16 +78,21 @@ def heuristic_teacher_action(
     repulsion = np.zeros(3, dtype=np.float32)
     repulsion_radius = _teacher_float(config, "repulsion_radius")
     repulsion_gain = _teacher_float(config, "repulsion_gain")
+    repulsion_obstacle_count = 0
     lateral_avoidance = np.zeros(3, dtype=np.float32)
     lateral_avoidance_gain = _teacher_float(config, "lateral_avoidance_gain")
     lateral_avoidance_radius = _teacher_float(config, "lateral_avoidance_radius")
     forward_lookahead = _teacher_float(config, "forward_lookahead")
+    blocking_obstacle_count = 0
     for obstacle_position in np.asarray(obstacle_positions, dtype=np.float32):
         delta = np.asarray(drone_position - obstacle_position, dtype=np.float32)
         distance = float(np.linalg.norm(delta))
         if distance <= 1e-6 or distance >= repulsion_radius:
-            continue
-        repulsion += delta / max(distance * distance, 1e-3)
+            within_repulsion_radius = False
+        else:
+            within_repulsion_radius = True
+            repulsion += delta / max(distance * distance, 1e-3)
+            repulsion_obstacle_count += 1
 
         if lateral_avoidance_gain <= 0.0 or lateral_avoidance_radius <= 0.0 or forward_lookahead <= 0.0:
             continue
@@ -78,6 +106,8 @@ def heuristic_teacher_action(
         lateral_distance = float(np.linalg.norm(lateral_vector))
         if lateral_distance >= lateral_avoidance_radius:
             continue
+        if within_repulsion_radius or forward_distance <= forward_lookahead:
+            blocking_obstacle_count += 1
 
         if lateral_distance > 1e-6:
             bypass_direction = -lateral_vector / lateral_distance
@@ -114,7 +144,19 @@ def heuristic_teacher_action(
     action = np.zeros_like(action_high, dtype=np.float32)
     action[:-1] = np.clip(steering, action_low[:-1], action_high[:-1])
     action[-1] = speed
-    return action.astype(np.float32)
+    repulsion_magnitude = float(np.linalg.norm(repulsion))
+    bypass_magnitude = float(np.linalg.norm(lateral_avoidance))
+    return {
+        "action": action.astype(np.float32),
+        "goal_distance": goal_distance,
+        "repulsion_active": bool(repulsion_obstacle_count > 0),
+        "bypass_active": bool(blocking_obstacle_count > 0 and lateral_avoidance_gain > 0.0),
+        "teacher_active": bool(repulsion_obstacle_count > 0 or blocking_obstacle_count > 0),
+        "repulsion_obstacle_count": int(repulsion_obstacle_count),
+        "blocking_obstacle_count": int(blocking_obstacle_count),
+        "repulsion_magnitude": repulsion_magnitude,
+        "bypass_magnitude": bypass_magnitude,
+    }
 
 
 def teacher_alignment_bonus(

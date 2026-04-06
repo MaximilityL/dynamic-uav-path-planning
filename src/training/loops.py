@@ -33,7 +33,9 @@ def _reset_training_artifacts(layout: Dict[str, Path]) -> None:
     _unlink_if_exists(
         layout["train"] / "history.jsonl",
         layout["train"] / "eval_history.jsonl",
+        layout["train"] / "pretrain_history.jsonl",
         layout["train"] / "summary.json",
+        layout["train"] / "pretrain_summary.json",
         layout["train"] / "best_eval_summary.json",
         layout["train"] / "latest_eval_summary.json",
         layout["train"] / "stage_best_evaluations.json",
@@ -194,8 +196,38 @@ def _resolve_restored_stage(
     return stage_index, max(int(saved_stage_episode), 1)
 
 
+def _normalize_regression_protection_settings(raw_settings: Dict[str, object]) -> Dict[str, object]:
+    """Normalize stage-regression settings after defaults and overrides are merged."""
+    settings = dict(raw_settings)
+    settings["enabled"] = bool(settings.get("enabled", False))
+    settings["activate_after_success_rate"] = float(settings.get("activate_after_success_rate", 0.7))
+    settings["absolute_drop_threshold"] = float(settings.get("absolute_drop_threshold", 0.25))
+    settings["relative_drop_fraction"] = float(settings.get("relative_drop_fraction", 0.4))
+    settings["consecutive_bad_evals"] = max(int(settings.get("consecutive_bad_evals", 2)), 1)
+    settings["rollback_on_regression"] = bool(settings.get("rollback_on_regression", True))
+    settings["rollback_max_per_stage"] = max(int(settings.get("rollback_max_per_stage", 1)), 0)
+    settings["lr_multiplier_after_rollback"] = float(settings.get("lr_multiplier_after_rollback", 1.0))
+    settings["plateau_recovery_enabled"] = bool(settings.get("plateau_recovery_enabled", False))
+    settings["plateau_bad_eval_streak"] = max(int(settings.get("plateau_bad_eval_streak", 0)), 0)
+    if settings["plateau_bad_eval_streak"] <= 0:
+        settings["plateau_bad_eval_streak"] = int(settings["consecutive_bad_evals"])
+    settings["plateau_max_per_stage"] = max(int(settings.get("plateau_max_per_stage", 0)), 0)
+    settings["lr_multiplier_after_plateau_recovery"] = float(
+        settings.get("lr_multiplier_after_plateau_recovery", settings["lr_multiplier_after_rollback"])
+    )
+    settings["rerun_stage_demo_pretrain"] = bool(settings.get("rerun_stage_demo_pretrain", False))
+    settings["reset_stage_episode_on_plateau_recovery"] = bool(
+        settings.get("reset_stage_episode_on_plateau_recovery", False)
+    )
+    settings["stage_overrides"] = {
+        str(stage_name): dict(stage_override or {})
+        for stage_name, stage_override in dict(settings.get("stage_overrides", {}) or {}).items()
+    }
+    return settings
+
+
 def _regression_protection_settings(config: Config) -> Dict[str, object]:
-    """Return normalized stage-regression settings."""
+    """Return normalized global regression-protection settings."""
     settings: Dict[str, object] = {
         "enabled": False,
         "activate_after_success_rate": 0.7,
@@ -205,17 +237,675 @@ def _regression_protection_settings(config: Config) -> Dict[str, object]:
         "rollback_on_regression": True,
         "rollback_max_per_stage": 1,
         "lr_multiplier_after_rollback": 1.0,
+        "plateau_recovery_enabled": False,
+        "plateau_bad_eval_streak": 2,
+        "plateau_max_per_stage": 0,
+        "lr_multiplier_after_plateau_recovery": 1.0,
+        "rerun_stage_demo_pretrain": False,
+        "reset_stage_episode_on_plateau_recovery": False,
+        "stage_overrides": {},
     }
     settings.update(dict(config.training.stage_regression_protection or {}))
+    return _normalize_regression_protection_settings(settings)
+
+
+def _stage_regression_protection_settings(
+    config: Config,
+    *,
+    stage_name: str,
+) -> Dict[str, object]:
+    """Resolve stage-local regression-protection settings."""
+    base_settings = _regression_protection_settings(config)
+    stage_overrides = dict(base_settings["stage_overrides"].get(stage_name, {}))
+    resolved_settings = dict(base_settings)
+    resolved_settings.update(stage_overrides)
+    resolved_settings["stage_name"] = str(stage_name)
+    return _normalize_regression_protection_settings(resolved_settings)
+
+
+def _bc_warm_start_settings(config: Config) -> Dict[str, object]:
+    """Return normalized BC warm-start settings."""
+    settings: Dict[str, object] = {
+        "enabled": False,
+        "stages": [],
+        "initial_coef": 0.0,
+        "final_coef": 0.0,
+        "anneal_episodes": 0,
+        "teacher_gated_only": False,
+        "gate_signal": "teacher_active",
+        "normalize_target_action": False,
+        "stage_overrides": {},
+    }
+    settings.update(dict(config.training.bc_warm_start or {}))
     settings["enabled"] = bool(settings.get("enabled", False))
-    settings["activate_after_success_rate"] = float(settings.get("activate_after_success_rate", 0.7))
-    settings["absolute_drop_threshold"] = float(settings.get("absolute_drop_threshold", 0.25))
-    settings["relative_drop_fraction"] = float(settings.get("relative_drop_fraction", 0.4))
-    settings["consecutive_bad_evals"] = max(int(settings.get("consecutive_bad_evals", 2)), 1)
-    settings["rollback_on_regression"] = bool(settings.get("rollback_on_regression", True))
-    settings["rollback_max_per_stage"] = max(int(settings.get("rollback_max_per_stage", 1)), 0)
-    settings["lr_multiplier_after_rollback"] = float(settings.get("lr_multiplier_after_rollback", 1.0))
+    settings["stages"] = [str(stage_name) for stage_name in list(settings.get("stages", []) or [])]
+    settings["initial_coef"] = float(settings.get("initial_coef", 0.0))
+    settings["final_coef"] = float(settings.get("final_coef", 0.0))
+    settings["anneal_episodes"] = max(int(settings.get("anneal_episodes", 0)), 0)
+    settings["teacher_gated_only"] = bool(settings.get("teacher_gated_only", False))
+    settings["normalize_target_action"] = bool(settings.get("normalize_target_action", False))
+    gate_signal = str(settings.get("gate_signal", "teacher_active")).strip().lower()
+    if gate_signal not in {"teacher_active", "bypass_active", "repulsion_active"}:
+        gate_signal = "teacher_active"
+    settings["gate_signal"] = gate_signal
+    settings["stage_overrides"] = {
+        str(stage_name): dict(stage_override or {})
+        for stage_name, stage_override in dict(settings.get("stage_overrides", {}) or {}).items()
+    }
     return settings
+
+
+def _bc_stage_settings(
+    config: Config,
+    *,
+    stage_name: str,
+    stage_episode: int,
+) -> Dict[str, object]:
+    """Resolve the current stage-local BC settings and annealed coefficient."""
+    base_settings = _bc_warm_start_settings(config)
+    stage_overrides = dict(base_settings["stage_overrides"].get(stage_name, {}))
+    resolved_settings = dict(base_settings)
+    resolved_settings.update(stage_overrides)
+    resolved_settings["stage_name"] = str(stage_name)
+    resolved_settings["stage_episode"] = int(stage_episode)
+    resolved_settings["teacher_gated_only"] = bool(resolved_settings.get("teacher_gated_only", False))
+    resolved_settings["normalize_target_action"] = bool(resolved_settings.get("normalize_target_action", False))
+    gate_signal = str(resolved_settings.get("gate_signal", "teacher_active")).strip().lower()
+    if gate_signal not in {"teacher_active", "bypass_active", "repulsion_active"}:
+        gate_signal = "teacher_active"
+    resolved_settings["gate_signal"] = gate_signal
+
+    stage_filter = list(base_settings.get("stages", []) or [])
+    stage_enabled = bool(resolved_settings.get("enabled", base_settings["enabled"])) and (
+        not stage_filter or stage_name in stage_filter
+    )
+    initial_coef = max(float(resolved_settings.get("initial_coef", 0.0)), 0.0)
+    final_coef = max(float(resolved_settings.get("final_coef", initial_coef)), 0.0)
+    anneal_episodes = max(int(resolved_settings.get("anneal_episodes", 0)), 0)
+    if anneal_episodes > 0 and not np.isclose(initial_coef, final_coef):
+        anneal_progress = min(max((int(stage_episode) - 1) / anneal_episodes, 0.0), 1.0)
+        current_coef = initial_coef + (final_coef - initial_coef) * anneal_progress
+    else:
+        anneal_progress = 0.0
+        current_coef = initial_coef
+
+    if not stage_enabled:
+        anneal_progress = 0.0
+        current_coef = 0.0
+
+    resolved_settings["enabled"] = stage_enabled
+    resolved_settings["active"] = bool(stage_enabled and current_coef > 0.0)
+    resolved_settings["initial_coef"] = initial_coef
+    resolved_settings["final_coef"] = final_coef
+    resolved_settings["anneal_episodes"] = anneal_episodes
+    resolved_settings["anneal_progress"] = float(anneal_progress)
+    resolved_settings["current_coef"] = float(max(current_coef, 0.0))
+    return resolved_settings
+
+
+def _bc_mask_from_teacher_guidance(
+    *,
+    teacher_guidance: Optional[Dict[str, object]],
+    bc_settings: Optional[Dict[str, object]],
+) -> float:
+    """Resolve whether BC should apply on the current transition."""
+    if not teacher_guidance or not bc_settings or not bool(bc_settings.get("active", False)):
+        return 0.0
+    if float(bc_settings.get("current_coef", 0.0)) <= 0.0:
+        return 0.0
+    if not bool(bc_settings.get("teacher_gated_only", False)):
+        return 1.0
+
+    gate_signal = str(bc_settings.get("gate_signal", "teacher_active")).strip().lower()
+    gate_value = teacher_guidance.get(gate_signal)
+    if gate_value is None and gate_signal != "teacher_active":
+        gate_value = teacher_guidance.get("teacher_active", False)
+    return float(bool(gate_value))
+
+
+def _bc_demo_pretrain_settings(config: Config) -> Dict[str, object]:
+    """Return normalized teacher-demo pretraining settings."""
+    settings: Dict[str, object] = {
+        "enabled": False,
+        "stages": [],
+        "episodes": 0,
+        "epochs": 1,
+        "batch_size": 128,
+        "teacher_gated_only": False,
+        "gate_signal": "teacher_active",
+        "normalize_target_action": False,
+        "successful_episodes_only": False,
+        "fallback_to_all_episodes": True,
+        "evaluate_after_pretrain": False,
+        "eval_episodes": 0,
+        "post_pretrain_action_std": 0.0,
+        "seed_offset": 200_000,
+        "stage_overrides": {},
+    }
+    settings.update(dict(config.training.bc_demo_pretrain or {}))
+    settings["enabled"] = bool(settings.get("enabled", False))
+    settings["stages"] = [str(stage_name) for stage_name in list(settings.get("stages", []) or [])]
+    settings["episodes"] = max(int(settings.get("episodes", 0)), 0)
+    settings["epochs"] = max(int(settings.get("epochs", 1)), 1)
+    settings["batch_size"] = max(int(settings.get("batch_size", 128)), 1)
+    settings["teacher_gated_only"] = bool(settings.get("teacher_gated_only", False))
+    settings["normalize_target_action"] = bool(settings.get("normalize_target_action", False))
+    settings["successful_episodes_only"] = bool(settings.get("successful_episodes_only", False))
+    settings["fallback_to_all_episodes"] = bool(settings.get("fallback_to_all_episodes", True))
+    settings["evaluate_after_pretrain"] = bool(settings.get("evaluate_after_pretrain", False))
+    settings["eval_episodes"] = max(int(settings.get("eval_episodes", 0)), 0)
+    settings["post_pretrain_action_std"] = max(float(settings.get("post_pretrain_action_std", 0.0)), 0.0)
+    settings["seed_offset"] = int(settings.get("seed_offset", 200_000))
+    gate_signal = str(settings.get("gate_signal", "teacher_active")).strip().lower()
+    if gate_signal not in {"teacher_active", "bypass_active", "repulsion_active"}:
+        gate_signal = "teacher_active"
+    settings["gate_signal"] = gate_signal
+    settings["stage_overrides"] = {
+        str(stage_name): dict(stage_override or {})
+        for stage_name, stage_override in dict(settings.get("stage_overrides", {}) or {}).items()
+    }
+    return settings
+
+
+def _stage_bc_demo_pretrain_settings(
+    config: Config,
+    *,
+    stage_name: str,
+) -> Dict[str, object]:
+    """Resolve stage-local teacher-demo pretraining settings."""
+    base_settings = _bc_demo_pretrain_settings(config)
+    stage_overrides = dict(base_settings["stage_overrides"].get(stage_name, {}))
+    resolved_settings = dict(base_settings)
+    resolved_settings.update(stage_overrides)
+    resolved_settings["stage_name"] = str(stage_name)
+    resolved_settings["teacher_gated_only"] = bool(resolved_settings.get("teacher_gated_only", False))
+    resolved_settings["normalize_target_action"] = bool(resolved_settings.get("normalize_target_action", False))
+    resolved_settings["successful_episodes_only"] = bool(resolved_settings.get("successful_episodes_only", False))
+    resolved_settings["fallback_to_all_episodes"] = bool(resolved_settings.get("fallback_to_all_episodes", True))
+    resolved_settings["evaluate_after_pretrain"] = bool(resolved_settings.get("evaluate_after_pretrain", False))
+    resolved_settings["eval_episodes"] = max(int(resolved_settings.get("eval_episodes", 0)), 0)
+    resolved_settings["post_pretrain_action_std"] = max(float(resolved_settings.get("post_pretrain_action_std", 0.0)), 0.0)
+    resolved_settings["episodes"] = max(int(resolved_settings.get("episodes", 0)), 0)
+    resolved_settings["epochs"] = max(int(resolved_settings.get("epochs", 1)), 1)
+    resolved_settings["batch_size"] = max(int(resolved_settings.get("batch_size", 128)), 1)
+    resolved_settings["seed_offset"] = int(resolved_settings.get("seed_offset", 200_000))
+    gate_signal = str(resolved_settings.get("gate_signal", "teacher_active")).strip().lower()
+    if gate_signal not in {"teacher_active", "bypass_active", "repulsion_active"}:
+        gate_signal = "teacher_active"
+    resolved_settings["gate_signal"] = gate_signal
+    stage_filter = list(base_settings.get("stages", []) or [])
+    stage_enabled = bool(resolved_settings.get("enabled", base_settings["enabled"])) and (
+        not stage_filter or stage_name in stage_filter
+    )
+    resolved_settings["enabled"] = stage_enabled
+    resolved_settings["active"] = bool(stage_enabled and int(resolved_settings["episodes"]) > 0)
+    return resolved_settings
+
+
+def _stage_entry_optimizer_reset_settings(config: Config) -> Dict[str, object]:
+    """Return normalized stage-entry optimizer reset settings."""
+    settings: Dict[str, object] = {
+        "enabled": False,
+        "stages": [],
+        "lr_multiplier": 1.0,
+        "reset_on_initial_stage": False,
+        "stage_overrides": {},
+    }
+    settings.update(dict(config.training.stage_entry_optimizer_reset or {}))
+    settings["enabled"] = bool(settings.get("enabled", False))
+    settings["stages"] = [str(stage_name) for stage_name in list(settings.get("stages", []) or [])]
+    settings["lr_multiplier"] = float(settings.get("lr_multiplier", 1.0))
+    settings["reset_on_initial_stage"] = bool(settings.get("reset_on_initial_stage", False))
+    settings["stage_overrides"] = {
+        str(stage_name): dict(stage_override or {})
+        for stage_name, stage_override in dict(settings.get("stage_overrides", {}) or {}).items()
+    }
+    return settings
+
+
+def _resolved_stage_entry_optimizer_reset_settings(
+    config: Config,
+    *,
+    stage_name: str,
+    is_initial_stage: bool,
+) -> Dict[str, object]:
+    """Resolve stage-local optimizer reset behavior for a stage entry."""
+    base_settings = _stage_entry_optimizer_reset_settings(config)
+    stage_overrides = dict(base_settings["stage_overrides"].get(stage_name, {}))
+    resolved_settings = dict(base_settings)
+    resolved_settings.update(stage_overrides)
+    resolved_settings["stage_name"] = str(stage_name)
+    resolved_settings["is_initial_stage"] = bool(is_initial_stage)
+    stage_filter = list(base_settings.get("stages", []) or [])
+    stage_selected = not stage_filter or stage_name in stage_filter
+    allow_initial_stage = bool(resolved_settings.get("reset_on_initial_stage", False)) or not bool(is_initial_stage)
+    resolved_settings["active"] = bool(
+        resolved_settings.get("enabled", False)
+        and stage_selected
+        and allow_initial_stage
+    )
+    resolved_settings["lr_multiplier"] = float(resolved_settings.get("lr_multiplier", 1.0))
+    return resolved_settings
+
+
+def _apply_stage_entry_optimizer_reset(
+    *,
+    config: Config,
+    agent: GraphPPOAgent,
+    stage_name: str,
+    stage_index: int,
+    is_initial_stage: bool,
+    train_episode_before: int,
+    progress_callback: Optional[Callable[[Dict[str, object]], None]],
+) -> Optional[Dict[str, object]]:
+    """Reset optimizer state when entering selected stages."""
+    reset_settings = _resolved_stage_entry_optimizer_reset_settings(
+        config,
+        stage_name=stage_name,
+        is_initial_stage=is_initial_stage,
+    )
+    if not bool(reset_settings.get("active", False)):
+        return None
+
+    learning_rates = agent.reset_optimizer()
+    lr_multiplier = float(reset_settings.get("lr_multiplier", 1.0))
+    if lr_multiplier != 1.0:
+        learning_rates = agent.scale_learning_rates(lr_multiplier)
+
+    event = {
+        "event": "stage_entry_optimizer_reset",
+        "stage_index": int(stage_index),
+        "stage_name": str(stage_name),
+        "is_initial_stage": float(bool(is_initial_stage)),
+        "train_episode_before": int(train_episode_before),
+        "lr_multiplier": float(lr_multiplier),
+        "actor_lr": float(learning_rates["actor"]),
+        "critic_lr": float(learning_rates["critic"]),
+    }
+    _emit_progress(progress_callback, event)
+    return event
+
+
+def _guidance_gate_active(
+    *,
+    teacher_guidance: Optional[Dict[str, object]],
+    gate_signal: str,
+) -> bool:
+    """Return whether one teacher guidance record activates the configured gate."""
+    if not teacher_guidance:
+        return False
+    normalized_gate_signal = str(gate_signal).strip().lower()
+    gate_value = teacher_guidance.get(normalized_gate_signal)
+    if gate_value is None and normalized_gate_signal != "teacher_active":
+        gate_value = teacher_guidance.get("teacher_active", False)
+    return bool(gate_value)
+
+
+def _collect_teacher_demo_dataset(
+    *,
+    env: DynamicAirspaceEnv,
+    pretrain_settings: Dict[str, object],
+    seed_base: int,
+    progress_callback: Optional[Callable[[Dict[str, object]], None]] = None,
+    stage_name: str = "main",
+    train_episode_before: int = 0,
+    stage_episode_before: int = 0,
+) -> tuple[List[Dict[str, np.ndarray]], List[np.ndarray], Dict[str, object]]:
+    """Collect teacher-policy demonstration data for one stage."""
+    episode_records: List[Dict[str, object]] = []
+    total_steps = 0
+    kept_steps = 0
+
+    teacher_gated_only = bool(pretrain_settings.get("teacher_gated_only", False))
+    gate_signal = str(pretrain_settings.get("gate_signal", "teacher_active"))
+    successful_episodes_only = bool(pretrain_settings.get("successful_episodes_only", False))
+    fallback_to_all_episodes = bool(pretrain_settings.get("fallback_to_all_episodes", True))
+    num_episodes = max(int(pretrain_settings.get("episodes", 0)), 0)
+    progress_interval = 8 if num_episodes >= 8 else 1
+    for demo_index in range(num_episodes):
+        observation, _ = env.reset(seed=seed_base + demo_index)
+        terminated = False
+        truncated = False
+        episode_observations: List[Dict[str, np.ndarray]] = []
+        episode_target_actions: List[np.ndarray] = []
+        episode_kept_steps = 0
+        while not (terminated or truncated):
+            teacher_guidance = env.teacher_guidance_for_current_state()
+            teacher_action = np.asarray(teacher_guidance["action"], dtype=np.float32)
+            total_steps += 1
+            include_sample = True
+            if teacher_gated_only:
+                include_sample = _guidance_gate_active(teacher_guidance=teacher_guidance, gate_signal=gate_signal)
+            if include_sample:
+                episode_observations.append(
+                    {key: np.asarray(value, dtype=np.float32).copy() for key, value in observation.items()}
+                )
+                episode_target_actions.append(teacher_action.copy())
+                kept_steps += 1
+                episode_kept_steps += 1
+            observation, _, terminated, truncated, _ = env.step(teacher_action)
+        episode_records.append(
+            {
+                "summary": env.get_episode_summary(),
+                "observations": episode_observations,
+                "target_actions": episode_target_actions,
+                "kept_steps": int(episode_kept_steps),
+            }
+        )
+        if (
+            progress_callback is not None
+            and (
+                (demo_index + 1) % progress_interval == 0
+                or demo_index + 1 == num_episodes
+            )
+        ):
+            source_episode_metrics = [dict(record["summary"]) for record in episode_records]
+            source_summary = summarize_episodes(source_episode_metrics) if source_episode_metrics else summarize_episodes([])
+            _emit_progress(
+                progress_callback,
+                {
+                    "event": "pretrain_collect_progress",
+                    "stage_name": str(stage_name),
+                    "train_episode_before": int(train_episode_before),
+                    "stage_episode_before": int(stage_episode_before),
+                    "demo_episode": int(demo_index + 1),
+                    "demo_episodes": int(num_episodes),
+                    "dataset_steps": int(total_steps),
+                    "kept_steps": int(kept_steps),
+                    "source_success_rate": float(source_summary.get("success_rate", 0.0)),
+                    "source_collision_rate": float(source_summary.get("collision_rate", 0.0)),
+                },
+            )
+
+    source_episode_metrics = [dict(record["summary"]) for record in episode_records]
+    source_summary = summarize_episodes(source_episode_metrics) if source_episode_metrics else summarize_episodes([])
+    selected_episode_records = episode_records
+    fallback_used = False
+    if successful_episodes_only:
+        selected_episode_records = [
+            record for record in episode_records if float(dict(record["summary"]).get("success", 0.0)) > 0.5
+        ]
+        if not selected_episode_records and fallback_to_all_episodes:
+            selected_episode_records = episode_records
+            fallback_used = True
+
+    observations: List[Dict[str, np.ndarray]] = []
+    target_actions: List[np.ndarray] = []
+    selected_episode_metrics: List[Dict[str, object]] = []
+    selected_steps = 0
+    for record in selected_episode_records:
+        observations.extend(list(record["observations"]))
+        target_actions.extend(list(record["target_actions"]))
+        selected_steps += int(record["kept_steps"])
+        selected_episode_metrics.append(dict(record["summary"]))
+
+    summary = summarize_episodes(selected_episode_metrics) if selected_episode_metrics else summarize_episodes([])
+    summary["num_episodes"] = int(len(selected_episode_records))
+    summary["configured_num_episodes"] = int(num_episodes)
+    summary["source_num_episodes"] = int(len(episode_records))
+    summary["source_success_rate"] = float(source_summary.get("success_rate", 0.0))
+    summary["source_collision_rate"] = float(source_summary.get("collision_rate", 0.0))
+    summary["source_avg_episode_return"] = float(source_summary.get("avg_episode_return", 0.0))
+    summary["num_samples"] = int(len(target_actions))
+    summary["dataset_steps"] = int(total_steps)
+    summary["active_fraction"] = float(selected_steps / max(total_steps, 1))
+    summary["teacher_gated_only"] = float(teacher_gated_only)
+    summary["gate_signal"] = gate_signal
+    summary["successful_episodes_only"] = float(successful_episodes_only)
+    summary["fallback_to_all_episodes"] = float(fallback_to_all_episodes)
+    summary["success_only_fallback_used"] = float(fallback_used)
+    return observations, target_actions, summary
+
+
+def _run_stage_demo_pretrain(
+    *,
+    config: Config,
+    layout: Dict[str, Path],
+    env: DynamicAirspaceEnv,
+    agent: GraphPPOAgent,
+    stage_index: int,
+    stage_name: str,
+    stage_config: Config,
+    train_episode_before: int,
+    progress_callback: Optional[Callable[[Dict[str, object]], None]] = None,
+    stage_episode_before: int = 0,
+) -> Optional[Dict[str, object]]:
+    """Run one stage-entry teacher-demo pretraining pass when configured."""
+    pretrain_settings = _stage_bc_demo_pretrain_settings(config, stage_name=stage_name)
+    if not bool(pretrain_settings.get("active", False)):
+        return None
+
+    seed_base = (
+        int(stage_config.environment.seed)
+        + int(pretrain_settings.get("seed_offset", 200_000))
+        + int(stage_index) * 10_000
+    )
+    _emit_progress(
+        progress_callback,
+        {
+            "event": "pretrain_start",
+            "stage_index": stage_index,
+            "stage_name": stage_name,
+            "train_episode_before": int(train_episode_before),
+            "stage_episode_before": int(stage_episode_before),
+            "episodes": int(pretrain_settings["episodes"]),
+            "epochs": int(pretrain_settings["epochs"]),
+            "batch_size": int(pretrain_settings["batch_size"]),
+            "teacher_gated_only": float(bool(pretrain_settings["teacher_gated_only"])),
+            "successful_episodes_only": float(bool(pretrain_settings["successful_episodes_only"])),
+            "evaluate_after_pretrain": float(bool(pretrain_settings["evaluate_after_pretrain"])),
+            "eval_episodes": int(pretrain_settings["eval_episodes"]),
+            "gate_signal": str(pretrain_settings["gate_signal"]),
+            "normalize_target_action": float(bool(pretrain_settings["normalize_target_action"])),
+            "post_pretrain_action_std": float(pretrain_settings.get("post_pretrain_action_std", 0.0)),
+        },
+    )
+
+    observations, target_actions, dataset_summary = _collect_teacher_demo_dataset(
+        env=env,
+        pretrain_settings=pretrain_settings,
+        seed_base=seed_base,
+        progress_callback=progress_callback,
+        stage_name=stage_name,
+        train_episode_before=train_episode_before,
+        stage_episode_before=stage_episode_before,
+    )
+    pretrain_metrics = agent.behavior_clone_pretrain(
+        observations=observations,
+        target_actions=target_actions,
+        epochs=int(pretrain_settings["epochs"]),
+        batch_size=int(pretrain_settings["batch_size"]),
+        normalize_target_action=bool(pretrain_settings["normalize_target_action"]),
+    )
+    applied_action_std = None
+    if float(pretrain_settings.get("post_pretrain_action_std", 0.0)) > 0.0:
+        applied_action_std = agent.set_action_std(float(pretrain_settings["post_pretrain_action_std"]))
+    pretrain_record: Dict[str, object] = {
+        "stage_index": int(stage_index),
+        "stage_name": str(stage_name),
+        "train_episode_before": int(train_episode_before),
+        "stage_episode_before": int(stage_episode_before),
+        "seed_base": int(seed_base),
+        "seed_offset": int(pretrain_settings.get("seed_offset", 200_000)),
+        "configured_demo_episodes": int(pretrain_settings["episodes"]),
+        "configured_epochs": int(pretrain_settings["epochs"]),
+        "configured_batch_size": int(pretrain_settings["batch_size"]),
+        "teacher_gated_only": float(bool(pretrain_settings["teacher_gated_only"])),
+        "successful_episodes_only": float(bool(pretrain_settings["successful_episodes_only"])),
+        "evaluate_after_pretrain": float(bool(pretrain_settings["evaluate_after_pretrain"])),
+        "eval_episodes": int(pretrain_settings["eval_episodes"]),
+        "gate_signal": str(pretrain_settings["gate_signal"]),
+        "normalize_target_action": float(bool(pretrain_settings["normalize_target_action"])),
+        "post_pretrain_action_std": float(pretrain_settings.get("post_pretrain_action_std", 0.0)),
+        "applied_action_std_mean": None if applied_action_std is None else float(np.mean(applied_action_std)),
+        **dataset_summary,
+        **pretrain_metrics,
+    }
+    append_jsonl(layout["train"] / "pretrain_history.jsonl", pretrain_record)
+    _emit_progress(
+        progress_callback,
+        {
+            "event": "pretrain_finish",
+            "stage_index": stage_index,
+            "stage_name": stage_name,
+            "train_episode_before": int(train_episode_before),
+            "summary": pretrain_record,
+        },
+    )
+    return pretrain_record
+
+
+def _update_stage_best_checkpoint(
+    *,
+    agent: GraphPPOAgent,
+    stage_state: Dict[str, object],
+    stage_index: int,
+    stage_name: str,
+    train_episode: int,
+    stage_episode: int,
+    stage_eval_index: int,
+    eval_summary: Dict[str, float],
+    recent_training_summary: Optional[Dict[str, float]],
+    config_name: str,
+    extra_metadata: Optional[Dict[str, object]] = None,
+) -> bool:
+    """Update per-stage best checkpoint bookkeeping when one evaluation improves on the prior best."""
+    stage_eval_score = _checkpoint_score(eval_summary, stage_index)
+    stage_best_updated = stage_eval_score > stage_state["best_eval_score"]
+    if not stage_best_updated:
+        return False
+
+    stage_state["best_eval_score"] = stage_eval_score
+    stage_state["best_eval"] = {
+        "stage_index": int(stage_index),
+        "stage_name": str(stage_name),
+        "train_episode": int(train_episode),
+        "stage_episode": int(stage_episode),
+        "eval_index": int(stage_eval_index),
+        **eval_summary,
+    }
+    stage_state["best_train_episode"] = int(train_episode)
+    stage_state["best_stage_episode"] = int(stage_episode)
+    stage_state["best_eval_index"] = int(stage_eval_index)
+    stage_state["bad_eval_streak"] = 0
+    metadata = {
+        "episode": int(train_episode),
+        "stage_index": int(stage_index),
+        "stage_name": str(stage_name),
+        "stage_episode": int(stage_episode),
+        "stage_eval_index": int(stage_eval_index),
+        "evaluation": dict(stage_state["best_eval"]),
+        "recent_training_summary": dict(recent_training_summary or {}),
+        "config_name": str(config_name),
+    }
+    if extra_metadata:
+        metadata.update(dict(extra_metadata))
+    agent.save(stage_state["best_model_path"], metadata=metadata)
+    save_json(stage_state["best_eval_summary_path"], dict(stage_state["best_eval"]))
+    return True
+
+
+def _run_stage_post_pretrain_evaluation(
+    *,
+    config: Config,
+    layout: Dict[str, Path],
+    agent: GraphPPOAgent,
+    stage: Optional[Dict[str, object]],
+    stage_state: Dict[str, object],
+    stage_index: int,
+    stage_name: str,
+    stage_config: Config,
+    train_episode_before: int,
+    stage_episode_before: int,
+    progress_callback: Optional[Callable[[Dict[str, object]], None]] = None,
+) -> Optional[Dict[str, object]]:
+    """Evaluate the freshly pretrained policy before PPO updates can regress it."""
+    pretrain_settings = _stage_bc_demo_pretrain_settings(config, stage_name=stage_name)
+    eval_episodes = int(pretrain_settings.get("eval_episodes", 0))
+    if not bool(pretrain_settings.get("evaluate_after_pretrain", False)) or eval_episodes <= 0:
+        return None
+
+    eval_history, eval_summary, eval_best_trajectory = _evaluate_current_policy(
+        config=stage_config,
+        agent=agent,
+        num_episodes=eval_episodes,
+        render=False,
+        deterministic=True,
+    )
+    stage_target_hit = False
+    if stage is not None:
+        stage_target_hit = _stage_target_reached(
+            stage=stage,
+            eval_summary=eval_summary,
+            stage_episode_count=stage_episode_before,
+        )
+    stage_state["num_evaluations"] = int(stage_state.get("num_evaluations", 0)) + 1
+    stage_eval_index = int(stage_state["num_evaluations"])
+    stage_best_updated = _update_stage_best_checkpoint(
+        agent=agent,
+        stage_state=stage_state,
+        stage_index=stage_index,
+        stage_name=stage_name,
+        train_episode=train_episode_before,
+        stage_episode=stage_episode_before,
+        stage_eval_index=stage_eval_index,
+        eval_summary=eval_summary,
+        recent_training_summary=None,
+        config_name=config.name,
+        extra_metadata={"pretrain_eval": True},
+    )
+    eval_record = {
+        "train_episode": int(train_episode_before),
+        "stage_index": int(stage_index),
+        "stage_name": str(stage_name),
+        "stage_episode": int(stage_episode_before),
+        "stage_eval_index": int(stage_eval_index),
+        "stage_target_hit": float(stage_target_hit),
+        "stage_success_streak": 0,
+        "stage_best_success_rate": float(dict(stage_state.get("best_eval") or {}).get("success_rate", 0.0)),
+        "stage_best_collision_rate": float(dict(stage_state.get("best_eval") or {}).get("collision_rate", 0.0)),
+        "stage_best_avg_return": float(dict(stage_state.get("best_eval") or {}).get("avg_episode_return", 0.0)),
+        "stage_bad_eval_streak": int(stage_state.get("bad_eval_streak", 0)),
+        "stage_regression_active": 0.0,
+        "stage_regression_bad_eval": 0.0,
+        "stage_regression_absolute_drop": 0.0,
+        "stage_regression_relative_drop": 0.0,
+        "stage_regression_detected": 0.0,
+        "stage_rollback_applied": 0.0,
+        "stage_plateau_recovery_applied": 0.0,
+        "pretrain_eval": 1.0,
+        **eval_summary,
+    }
+    append_jsonl(layout["train"] / "eval_history.jsonl", eval_record)
+    save_json(layout["train"] / "latest_eval_summary.json", eval_record)
+    save_json(
+        layout["train_evaluations"] / f"pretrain_eval_{stage_name}_summary.json",
+        {
+            "summary": eval_record,
+            "episodes": eval_history,
+        },
+    )
+    if config.evaluation.save_trajectories and eval_best_trajectory is not None:
+        _save_best_trajectory(layout["train_evaluations"] / f"pretrain_eval_{stage_name}_best_episode", eval_best_trajectory)
+    _emit_progress(
+        progress_callback,
+        {
+            "event": "pretrain_eval",
+            "stage_index": int(stage_index),
+            "stage_name": str(stage_name),
+            "train_episode_before": int(train_episode_before),
+            "stage_episode_before": int(stage_episode_before),
+            "evaluation": eval_record,
+            "stage_best_updated": float(stage_best_updated),
+        },
+    )
+    return {
+        "eval_record": eval_record,
+        "eval_summary": eval_summary,
+        "best_trajectory": eval_best_trajectory,
+        "stage_target_hit": bool(stage_target_hit),
+        "stage_best_updated": bool(stage_best_updated),
+    }
 
 
 def _stage_tracking_state(layout: Dict[str, Path], *, stage_index: int, stage_name: str) -> Dict[str, object]:
@@ -232,6 +922,7 @@ def _stage_tracking_state(layout: Dict[str, Path], *, stage_index: int, stage_na
         "num_evaluations": 0,
         "bad_eval_streak": 0,
         "rollback_count": 0,
+        "plateau_recovery_count": 0,
         "best_model_path": stage_dir / "best_model.pth",
         "best_eval_summary_path": stage_dir / "best_eval_summary.json",
     }
@@ -291,7 +982,90 @@ def _serialize_stage_best(stage_state: Dict[str, object]) -> Dict[str, object]:
         "best_stage_episode": int(stage_state.get("best_stage_episode", 0)),
         "best_eval_index": int(stage_state.get("best_eval_index", 0)),
         "rollback_count": int(stage_state.get("rollback_count", 0)),
+        "plateau_recovery_count": int(stage_state.get("plateau_recovery_count", 0)),
         "best_model_path": str(stage_state["best_model_path"]),
+    }
+
+
+def _apply_stage_plateau_recovery(
+    *,
+    config: Config,
+    layout: Dict[str, Path],
+    env: DynamicAirspaceEnv,
+    agent: GraphPPOAgent,
+    stage_state: Dict[str, object],
+    stage_index: int,
+    stage_name: str,
+    stage_episode: int,
+    stage_eval_index: int,
+    stage_config: Config,
+    train_episode_before: int,
+    protection: Dict[str, object],
+    progress_callback: Optional[Callable[[Dict[str, object]], None]],
+) -> Optional[Dict[str, object]]:
+    """Reload the stage best checkpoint and optionally replay demos after a long plateau."""
+    plateau_bad_eval_streak = int(protection.get("plateau_bad_eval_streak", protection.get("consecutive_bad_evals", 1)))
+    best_model_path = Path(stage_state["best_model_path"])
+    can_recover = (
+        bool(protection.get("plateau_recovery_enabled", False))
+        and int(stage_state.get("bad_eval_streak", 0)) >= plateau_bad_eval_streak
+        and int(stage_state.get("plateau_recovery_count", 0)) < int(protection.get("plateau_max_per_stage", 0))
+        and best_model_path.exists()
+    )
+    if not can_recover:
+        return None
+
+    agent.clear_rollout_buffers()
+    agent.load(
+        best_model_path,
+        load_optimizer_state=False,
+        load_scheduler_state=False,
+        reset_optimizer_if_skipped=True,
+    )
+    lr_multiplier = float(protection.get("lr_multiplier_after_plateau_recovery", 1.0))
+    if lr_multiplier > 0.0 and not np.isclose(lr_multiplier, 1.0):
+        learning_rates = agent.scale_learning_rates(lr_multiplier)
+    else:
+        learning_rates = agent.learning_rates()
+
+    pretrain_record = None
+    if bool(protection.get("rerun_stage_demo_pretrain", False)):
+        pretrain_record = _run_stage_demo_pretrain(
+            config=config,
+            layout=layout,
+            env=env,
+            agent=agent,
+            stage_index=stage_index,
+            stage_name=stage_name,
+            stage_config=stage_config,
+            train_episode_before=train_episode_before,
+            stage_episode_before=stage_episode,
+            progress_callback=progress_callback,
+        )
+
+    stage_state["plateau_recovery_count"] = int(stage_state.get("plateau_recovery_count", 0)) + 1
+    stage_state["bad_eval_streak"] = 0
+    reset_stage_episode = bool(protection.get("reset_stage_episode_on_plateau_recovery", False))
+    event = {
+        "event": "stage_plateau_recovery",
+        "episode": int(train_episode_before),
+        "stage_index": int(stage_index),
+        "stage_name": str(stage_name),
+        "stage_episode": int(stage_episode),
+        "stage_eval_index": int(stage_eval_index),
+        "recovery_count": int(stage_state["plateau_recovery_count"]),
+        "bad_eval_streak_trigger": int(plateau_bad_eval_streak),
+        "restored_checkpoint": str(best_model_path),
+        "actor_lr": float(learning_rates["actor"]),
+        "critic_lr": float(learning_rates["critic"]),
+        "reran_demo_pretrain": float(pretrain_record is not None),
+        "demo_samples": float((pretrain_record or {}).get("num_samples", 0.0)),
+        "reset_stage_episode": float(reset_stage_episode),
+    }
+    return {
+        "event": event,
+        "pretrain_record": pretrain_record,
+        "reset_stage_episode": reset_stage_episode,
     }
 
 
@@ -355,6 +1129,7 @@ def run_episode(
     episode_seed: int,
     deterministic: bool,
     store_transition: bool,
+    bc_settings: Optional[Dict[str, object]] = None,
 ) -> Tuple[Dict[str, object], Dict[str, object]]:
     """Run one episode and optionally store transitions for PPO updates."""
     observation, _ = env.reset(seed=episode_seed)
@@ -362,12 +1137,17 @@ def run_episode(
     truncated = False
 
     while not (terminated or truncated):
+        teacher_guidance = None
+        teacher_action = None
+        if store_transition and not deterministic:
+            teacher_guidance = env.teacher_guidance_for_current_state()
+            teacher_action = np.asarray(teacher_guidance["action"], dtype=np.float32)
         action, policy_info = agent.select_action(observation, deterministic=deterministic)
         executed_action = action
         if store_transition and not deterministic:
             executed_action = teacher_guided_action(
                 policy_action=action,
-                teacher_action=env.teacher_action_for_current_state(),
+                teacher_action=teacher_action,
                 action_low=env.action_space.low,
                 action_high=env.action_space.high,
                 teacher_config=env.teacher_config,
@@ -380,6 +1160,8 @@ def run_episode(
             agent.store_transition(
                 observation=observation,
                 action=executed_action,
+                teacher_action=teacher_action,
+                bc_mask=_bc_mask_from_teacher_guidance(teacher_guidance=teacher_guidance, bc_settings=bc_settings),
                 reward=reward,
                 done=terminated,
                 log_prob=policy_info["log_prob"],
@@ -421,7 +1203,10 @@ def train_agent(
     stage_success_streak = 0
     stage_transitions: List[Dict[str, object]] = []
     stage_regression_events: List[Dict[str, object]] = []
-    regression_protection = _regression_protection_settings(config)
+    stage_entry_optimizer_reset_settings = _stage_entry_optimizer_reset_settings(config)
+    stage_entry_optimizer_reset_events: List[Dict[str, object]] = []
+    bc_warm_start_settings = _bc_warm_start_settings(config)
+    bc_demo_pretrain_settings = _bc_demo_pretrain_settings(config)
     stage_states: Dict[str, Dict[str, object]] = {}
     if curriculum:
         for stage_index, stage in enumerate(curriculum):
@@ -465,12 +1250,24 @@ def train_agent(
 
     history: List[Dict[str, object]] = []
     evaluation_history: List[Dict[str, float]] = []
+    pretrain_history: List[Dict[str, object]] = []
     best_eval_summary: Optional[Dict[str, float]] = None
     latest_eval_summary: Optional[Dict[str, float]] = None
     best_eval_score = (-float("inf"), -float("inf"), -float("inf"), -float("inf"))
-    last_update_metrics = {"actor_loss": 0.0, "critic_loss": 0.0, "entropy": 0.0}
+    last_update_metrics = {
+        "actor_loss": 0.0,
+        "critic_loss": 0.0,
+        "entropy": 0.0,
+        "bc_loss": 0.0,
+        "bc_nonzero": 0.0,
+        "bc_coef": 0.0,
+        "bc_active_fraction": 0.0,
+        "bc_active_samples": 0.0,
+        "bc_total_samples": 0.0,
+    }
     episodes_completed = 0
     start_time = perf_counter()
+    pretrained_stage_names: set[str] = set()
 
     _emit_progress(
         progress_callback,
@@ -481,6 +1278,14 @@ def train_agent(
             "stage_name": current_stage_name,
             "curriculum_stage_count": len(curriculum),
             "config_name": config.name,
+            "bc_enabled": float(bool(bc_warm_start_settings["enabled"])),
+            "bc_stages": list(bc_warm_start_settings["stages"]),
+            "bc_teacher_gated_only": float(bool(bc_warm_start_settings["teacher_gated_only"])),
+            "bc_gate_signal": str(bc_warm_start_settings["gate_signal"]),
+            "bc_demo_pretrain_enabled": float(bool(bc_demo_pretrain_settings["enabled"])),
+            "bc_demo_pretrain_stages": list(bc_demo_pretrain_settings["stages"]),
+            "stage_entry_optimizer_reset_enabled": float(bool(stage_entry_optimizer_reset_settings["enabled"])),
+            "stage_entry_optimizer_reset_stages": list(stage_entry_optimizer_reset_settings["stages"]),
         },
     )
     if resume_path:
@@ -498,15 +1303,87 @@ def train_agent(
         )
 
     try:
+        if stage_start_episode == 1 and current_stage_name not in pretrained_stage_names:
+            reset_event = _apply_stage_entry_optimizer_reset(
+                config=config,
+                agent=agent,
+                stage_name=current_stage_name,
+                stage_index=current_stage_index,
+                is_initial_stage=True,
+                train_episode_before=episodes_completed,
+                progress_callback=progress_callback,
+            )
+            if reset_event is not None:
+                stage_entry_optimizer_reset_events.append(reset_event)
+            pretrain_record = _run_stage_demo_pretrain(
+                config=config,
+                layout=layout,
+                env=env,
+                agent=agent,
+                stage_index=current_stage_index,
+                stage_name=current_stage_name,
+                stage_config=current_stage_config,
+                train_episode_before=episodes_completed,
+                stage_episode_before=0,
+                progress_callback=progress_callback,
+            )
+            if pretrain_record is not None:
+                pretrain_history.append(pretrain_record)
+                save_json(layout["train"] / "pretrain_summary.json", {"runs": pretrain_history})
+            pretrain_eval = _run_stage_post_pretrain_evaluation(
+                config=config,
+                layout=layout,
+                agent=agent,
+                stage=current_stage,
+                stage_state=stage_states[current_stage_name],
+                stage_index=current_stage_index,
+                stage_name=current_stage_name,
+                stage_config=current_stage_config,
+                train_episode_before=episodes_completed,
+                stage_episode_before=0,
+                progress_callback=progress_callback,
+            )
+            if pretrain_eval is not None:
+                eval_record = dict(pretrain_eval["eval_record"])
+                evaluation_history.append(eval_record)
+                latest_eval_summary = eval_record
+                save_json(
+                    layout["train"] / "stage_best_evaluations.json",
+                    {stage_name: _serialize_stage_best(state) for stage_name, state in stage_states.items()},
+                )
+                if _checkpoint_score(dict(pretrain_eval["eval_summary"]), current_stage_index) > best_eval_score:
+                    best_eval_score = _checkpoint_score(dict(pretrain_eval["eval_summary"]), current_stage_index)
+                    best_eval_summary = eval_record
+                    agent.save(
+                        best_model_path,
+                        metadata={
+                            "episode": episodes_completed,
+                            "stage_index": current_stage_index,
+                            "stage_name": current_stage_name,
+                            "evaluation": eval_record,
+                            "recent_training_summary": {},
+                            "config_name": config.name,
+                            "pretrain_eval": True,
+                        },
+                    )
+                    save_json(layout["train"] / "best_eval_summary.json", eval_record)
+            pretrained_stage_names.add(current_stage_name)
+
         for episode_idx in range(episode_budget):
             episode_number = episode_idx + 1
             stage_episode = episode_number - stage_start_episode + 1
+            stage_bc_settings = _bc_stage_settings(
+                config,
+                stage_name=current_stage_name,
+                stage_episode=stage_episode,
+            )
             metrics, _ = run_episode(
                 env=env,
                 agent=agent,
                 episode_seed=current_stage_config.environment.seed + episode_idx,
                 deterministic=False,
                 store_transition=True,
+                bc_settings=stage_bc_settings,
             )
             history.append(metrics)
             episodes_completed = episode_number
@@ -516,7 +1393,10 @@ def train_agent(
             policy_updated = False
             stop_training_early = False
             if (is_rollout_boundary or is_final_episode) and agent.has_pending_rollout():
-                last_update_metrics = agent.update()
+                last_update_metrics = agent.update(
+                    bc_coef=float(stage_bc_settings["current_coef"]),
+                    normalize_bc_target_action=bool(stage_bc_settings["normalize_target_action"]),
+                )
                 policy_updated = True
 
             recent_window = history[-config.training.moving_average_window :]
@@ -536,6 +1416,12 @@ def train_agent(
                     "rolling_success_rate": recent_summary["success_rate"],
                     "rolling_collision_rate": recent_summary["collision_rate"],
                     "rolling_avg_episode_return": recent_summary["avg_episode_return"],
+                    "bc_enabled": float(bool(stage_bc_settings["enabled"])),
+                    "bc_stage_active": float(bool(stage_bc_settings["active"])),
+                    "bc_coef": float(stage_bc_settings["current_coef"]),
+                    "bc_anneal_progress": float(stage_bc_settings["anneal_progress"]),
+                    "bc_teacher_gated_only": float(bool(stage_bc_settings["teacher_gated_only"])),
+                    "bc_gate_signal": str(stage_bc_settings["gate_signal"]),
                 },
             )
             _emit_progress(
@@ -553,11 +1439,16 @@ def train_agent(
                     "rolling_summary": recent_summary,
                     "policy_updated": policy_updated,
                     "update_metrics": last_update_metrics,
+                    "bc_settings": stage_bc_settings,
                 },
             )
 
             should_evaluate = (episode_number % config.training.eval_interval) == 0 or is_final_episode
             if should_evaluate:
+                stage_regression_protection = _stage_regression_protection_settings(
+                    config,
+                    stage_name=current_stage_name,
+                )
                 eval_history, eval_summary, eval_best_trajectory = _evaluate_current_policy(
                     config=current_stage_config,
                     agent=agent,
@@ -578,48 +1469,23 @@ def train_agent(
                 stage_state = stage_states[current_stage_name]
                 stage_state["num_evaluations"] = int(stage_state.get("num_evaluations", 0)) + 1
                 stage_eval_index = int(stage_state["num_evaluations"])
-                stage_eval_score = _checkpoint_score(eval_summary, current_stage_index)
-                stage_best_updated = stage_eval_score > stage_state["best_eval_score"]
-                if stage_best_updated:
-                    stage_state["best_eval_score"] = stage_eval_score
-                    stage_state["best_eval"] = {
-                        "stage_index": current_stage_index,
-                        "stage_name": current_stage_name,
-                        "train_episode": episode_number,
-                        "stage_episode": stage_episode,
-                        "eval_index": stage_eval_index,
-                        **eval_summary,
-                    }
-                    stage_state["best_train_episode"] = int(episode_number)
-                    stage_state["best_stage_episode"] = int(stage_episode)
-                    stage_state["best_eval_index"] = int(stage_eval_index)
-                    stage_state["bad_eval_streak"] = 0
-                    agent.save(
-                        stage_state["best_model_path"],
-                        metadata={
-                            "episode": episode_number,
-                            "stage_index": current_stage_index,
-                            "stage_name": current_stage_name,
-                            "stage_episode": stage_episode,
-                            "stage_eval_index": stage_eval_index,
-                            "evaluation": {
-                                "stage_index": current_stage_index,
-                                "stage_name": current_stage_name,
-                                "train_episode": episode_number,
-                                "stage_episode": stage_episode,
-                                "eval_index": stage_eval_index,
-                                **eval_summary,
-                            },
-                            "recent_training_summary": recent_summary,
-                            "config_name": config.name,
-                        },
-                    )
-                    save_json(stage_state["best_eval_summary_path"], dict(stage_state["best_eval"]))
+                stage_best_updated = _update_stage_best_checkpoint(
+                    agent=agent,
+                    stage_state=stage_state,
+                    stage_index=current_stage_index,
+                    stage_name=current_stage_name,
+                    train_episode=episode_number,
+                    stage_episode=stage_episode,
+                    stage_eval_index=stage_eval_index,
+                    eval_summary=eval_summary,
+                    recent_training_summary=recent_summary,
+                    config_name=config.name,
+                )
 
                 regression_signal = _stage_regression_signal(
                     eval_summary=eval_summary,
                     stage_state=stage_state,
-                    protection=regression_protection,
+                    protection=stage_regression_protection,
                 )
                 if stage_best_updated:
                     stage_state["bad_eval_streak"] = 0
@@ -630,10 +1496,11 @@ def train_agent(
 
                 regression_detected = False
                 rollback_applied = False
+                plateau_recovery_applied = False
                 best_eval_for_stage = dict(stage_state.get("best_eval") or {})
                 if (
                     bool(regression_signal["bad"])
-                    and int(stage_state["bad_eval_streak"]) >= int(regression_protection["consecutive_bad_evals"])
+                    and int(stage_state["bad_eval_streak"]) >= int(stage_regression_protection["consecutive_bad_evals"])
                 ):
                     regression_detected = True
                     detection_event = {
@@ -655,8 +1522,8 @@ def train_agent(
                     _emit_progress(progress_callback, detection_event)
 
                     can_rollback = (
-                        bool(regression_protection["rollback_on_regression"])
-                        and int(stage_state["rollback_count"]) < int(regression_protection["rollback_max_per_stage"])
+                        bool(stage_regression_protection["rollback_on_regression"])
+                        and int(stage_state["rollback_count"]) < int(stage_regression_protection["rollback_max_per_stage"])
                         and Path(stage_state["best_model_path"]).exists()
                     )
                     if can_rollback:
@@ -667,7 +1534,7 @@ def train_agent(
                             load_scheduler_state=False,
                             reset_optimizer_if_skipped=True,
                         )
-                        lr_multiplier = float(regression_protection["lr_multiplier_after_rollback"])
+                        lr_multiplier = float(stage_regression_protection["lr_multiplier_after_rollback"])
                         if lr_multiplier > 0.0 and lr_multiplier != 1.0:
                             learning_rates = agent.scale_learning_rates(lr_multiplier)
                         else:
@@ -691,6 +1558,35 @@ def train_agent(
                         stage_regression_events.append(rollback_event)
                         append_jsonl(layout["train"] / "stage_regression_events.jsonl", rollback_event)
                         _emit_progress(progress_callback, rollback_event)
+                    elif bool(stage_regression_protection.get("plateau_recovery_enabled", False)):
+                        plateau_recovery = _apply_stage_plateau_recovery(
+                            config=config,
+                            layout=layout,
+                            env=env,
+                            agent=agent,
+                            stage_state=stage_state,
+                            stage_index=current_stage_index,
+                            stage_name=current_stage_name,
+                            stage_episode=stage_episode,
+                            stage_eval_index=stage_eval_index,
+                            stage_config=current_stage_config,
+                            train_episode_before=episode_number,
+                            protection=stage_regression_protection,
+                            progress_callback=progress_callback,
+                        )
+                        if plateau_recovery is not None:
+                            plateau_event = dict(plateau_recovery["event"])
+                            stage_regression_events.append(plateau_event)
+                            append_jsonl(layout["train"] / "stage_regression_events.jsonl", plateau_event)
+                            _emit_progress(progress_callback, plateau_event)
+                            pretrain_record = plateau_recovery.get("pretrain_record")
+                            if pretrain_record is not None:
+                                pretrain_history.append(pretrain_record)
+                                save_json(layout["train"] / "pretrain_summary.json", {"runs": pretrain_history})
+                            stage_success_streak = 0
+                            plateau_recovery_applied = True
+                            if bool(plateau_recovery.get("reset_stage_episode", False)):
+                                stage_start_episode = episode_number + 1
 
                 eval_record = {
                     "train_episode": episode_number,
@@ -710,6 +1606,7 @@ def train_agent(
                     "stage_regression_relative_drop": float(regression_signal["relative_drop"]),
                     "stage_regression_detected": float(regression_detected),
                     "stage_rollback_applied": float(rollback_applied),
+                    "stage_plateau_recovery_applied": float(plateau_recovery_applied),
                     **eval_summary,
                 }
                 evaluation_history.append(eval_record)
@@ -798,6 +1695,71 @@ def train_agent(
                             gui=False,
                             seed=current_stage_config.environment.seed,
                         )
+                        reset_event = _apply_stage_entry_optimizer_reset(
+                            config=config,
+                            agent=agent,
+                            stage_name=current_stage_name,
+                            stage_index=current_stage_index,
+                            is_initial_stage=False,
+                            train_episode_before=episode_number,
+                            progress_callback=progress_callback,
+                        )
+                        if reset_event is not None:
+                            stage_entry_optimizer_reset_events.append(reset_event)
+                        if current_stage_name not in pretrained_stage_names:
+                            pretrain_record = _run_stage_demo_pretrain(
+                                config=config,
+                                layout=layout,
+                                env=env,
+                                agent=agent,
+                                stage_index=current_stage_index,
+                                stage_name=current_stage_name,
+                                stage_config=current_stage_config,
+                                train_episode_before=episode_number,
+                                stage_episode_before=0,
+                                progress_callback=progress_callback,
+                            )
+                        if pretrain_record is not None:
+                            pretrain_history.append(pretrain_record)
+                            save_json(layout["train"] / "pretrain_summary.json", {"runs": pretrain_history})
+                        pretrain_eval = _run_stage_post_pretrain_evaluation(
+                            config=config,
+                            layout=layout,
+                            agent=agent,
+                            stage=current_stage,
+                            stage_state=stage_states[current_stage_name],
+                            stage_index=current_stage_index,
+                            stage_name=current_stage_name,
+                            stage_config=current_stage_config,
+                            train_episode_before=episode_number,
+                            stage_episode_before=0,
+                            progress_callback=progress_callback,
+                        )
+                        if pretrain_eval is not None:
+                            eval_record = dict(pretrain_eval["eval_record"])
+                            evaluation_history.append(eval_record)
+                            latest_eval_summary = eval_record
+                            save_json(
+                                layout["train"] / "stage_best_evaluations.json",
+                                {stage_name: _serialize_stage_best(state) for stage_name, state in stage_states.items()},
+                            )
+                            if _checkpoint_score(dict(pretrain_eval["eval_summary"]), current_stage_index) > best_eval_score:
+                                best_eval_score = _checkpoint_score(dict(pretrain_eval["eval_summary"]), current_stage_index)
+                                best_eval_summary = eval_record
+                                agent.save(
+                                    best_model_path,
+                                    metadata={
+                                        "episode": episode_number,
+                                        "stage_index": current_stage_index,
+                                        "stage_name": current_stage_name,
+                                        "evaluation": eval_record,
+                                        "recent_training_summary": {},
+                                        "config_name": config.name,
+                                        "pretrain_eval": True,
+                                    },
+                                )
+                                save_json(layout["train"] / "best_eval_summary.json", eval_record)
+                        pretrained_stage_names.add(current_stage_name)
                     else:
                         stop_training_early = True
 
@@ -841,6 +1803,12 @@ def train_agent(
         sum(1 for event in stage_regression_events if str(event.get("event")) == "stage_regression_detected")
     )
     summary["stage_rollback_count"] = int(sum(1 for event in stage_regression_events if str(event.get("event")) == "stage_rollback"))
+    summary["stage_plateau_recovery_count"] = int(
+        sum(1 for event in stage_regression_events if str(event.get("event")) == "stage_plateau_recovery")
+    )
+    summary["stage_entry_optimizer_reset_count"] = int(len(stage_entry_optimizer_reset_events))
+    summary["pretrain_run_count"] = int(len(pretrain_history))
+    summary["pretrain_total_samples"] = float(sum(float(run.get("bc_pretrain_samples", 0.0)) for run in pretrain_history))
     if resume_path:
         summary["resume_checkpoint_path"] = str(resume_path)
         summary["resume_loaded_optimizer_state"] = float(bool(resume_settings["load_optimizer_state"]))
@@ -859,6 +1827,8 @@ def train_agent(
             "best_evaluation": best_eval_summary,
             "latest_evaluation": latest_eval_summary,
             "last_update_metrics": last_update_metrics,
+            "stage_entry_optimizer_reset_events": stage_entry_optimizer_reset_events,
+            "pretrain_runs": pretrain_history,
             "stage_best_evaluations": stage_best_evaluations,
             "stage_transitions": stage_transitions,
             "stage_regression_events": stage_regression_events,
@@ -872,6 +1842,8 @@ def train_agent(
             "completed_episodes": episodes_completed,
             "elapsed_seconds": total_elapsed_seconds,
             "summary": summary,
+            "bc_warm_start": bc_warm_start_settings,
+            "stage_entry_optimizer_reset": stage_entry_optimizer_reset_settings,
         },
     )
     return summary

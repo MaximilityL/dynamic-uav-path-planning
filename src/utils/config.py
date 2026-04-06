@@ -120,6 +120,9 @@ class TrainingConfig:
     eval_episodes: int = 10
     print_interval: int = 10
     resume: Dict[str, Any] = field(default_factory=dict)
+    bc_warm_start: Dict[str, Any] = field(default_factory=dict)
+    bc_demo_pretrain: Dict[str, Any] = field(default_factory=dict)
+    stage_entry_optimizer_reset: Dict[str, Any] = field(default_factory=dict)
     stage_regression_protection: Dict[str, Any] = field(default_factory=dict)
     curriculum: list = field(default_factory=list)
 
@@ -153,7 +156,7 @@ class Config:
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     visualization: VisualizationConfig = field(default_factory=VisualizationConfig)
     name: str = "dynamic_uav_path_planning"
-    version: str = "1.0.0"
+    version: str = "1.0.3"
     description: str = "Main PPO+GNN config for single-UAV dynamic obstacle avoidance"
     tags: list = field(default_factory=list)
 
@@ -177,6 +180,9 @@ class Config:
         if "training" in payload:
             training_dict = dict(payload["training"])
             training_dict["resume"] = dict(training_dict.get("resume", {}))
+            training_dict["bc_warm_start"] = dict(training_dict.get("bc_warm_start", {}))
+            training_dict["bc_demo_pretrain"] = dict(training_dict.get("bc_demo_pretrain", {}))
+            training_dict["stage_entry_optimizer_reset"] = dict(training_dict.get("stage_entry_optimizer_reset", {}))
             training_dict["stage_regression_protection"] = dict(training_dict.get("stage_regression_protection", {}))
             training_dict["curriculum"] = list(training_dict.get("curriculum", []))
             payload["training"] = TrainingConfig(**training_dict)
@@ -286,8 +292,136 @@ def validate_config(config: Config) -> None:
         raise ValueError("training.print_interval must be positive.")
     if not isinstance(config.training.resume, dict):
         raise ValueError("training.resume must be a mapping.")
+    if not isinstance(config.training.bc_warm_start, dict):
+        raise ValueError("training.bc_warm_start must be a mapping.")
+    bc_warm_start = dict(config.training.bc_warm_start)
+    if "stages" in bc_warm_start and not isinstance(bc_warm_start["stages"], list):
+        raise ValueError("training.bc_warm_start.stages must be a list when provided.")
+    if "stage_overrides" in bc_warm_start and not isinstance(bc_warm_start["stage_overrides"], dict):
+        raise ValueError("training.bc_warm_start.stage_overrides must be a mapping when provided.")
+    if "gate_signal" in bc_warm_start:
+        gate_signal = str(bc_warm_start["gate_signal"]).strip().lower()
+        if gate_signal not in {"teacher_active", "bypass_active", "repulsion_active"}:
+            raise ValueError(
+                "training.bc_warm_start.gate_signal must be one of "
+                "'teacher_active', 'bypass_active', or 'repulsion_active'."
+            )
+    for key in ("initial_coef", "final_coef"):
+        if key in bc_warm_start and float(bc_warm_start[key]) < 0.0:
+            raise ValueError(f"training.bc_warm_start.{key} must be non-negative.")
+    if "anneal_episodes" in bc_warm_start and int(bc_warm_start["anneal_episodes"]) < 0:
+        raise ValueError("training.bc_warm_start.anneal_episodes must be non-negative.")
+    for stage_name, stage_override in dict(bc_warm_start.get("stage_overrides", {}) or {}).items():
+        if not isinstance(stage_override, dict):
+            raise ValueError(f"training.bc_warm_start.stage_overrides.{stage_name} must be a mapping.")
+        if "gate_signal" in stage_override:
+            gate_signal = str(stage_override["gate_signal"]).strip().lower()
+            if gate_signal not in {"teacher_active", "bypass_active", "repulsion_active"}:
+                raise ValueError(
+                    f"training.bc_warm_start.stage_overrides.{stage_name}.gate_signal must be one of "
+                    "'teacher_active', 'bypass_active', or 'repulsion_active'."
+                )
+        for key in ("initial_coef", "final_coef"):
+            if key in stage_override and float(stage_override[key]) < 0.0:
+                raise ValueError(f"training.bc_warm_start.stage_overrides.{stage_name}.{key} must be non-negative.")
+        if "anneal_episodes" in stage_override and int(stage_override["anneal_episodes"]) < 0:
+            raise ValueError(f"training.bc_warm_start.stage_overrides.{stage_name}.anneal_episodes must be non-negative.")
+    if not isinstance(config.training.bc_demo_pretrain, dict):
+        raise ValueError("training.bc_demo_pretrain must be a mapping.")
+    bc_demo_pretrain = dict(config.training.bc_demo_pretrain)
+    if "stages" in bc_demo_pretrain and not isinstance(bc_demo_pretrain["stages"], list):
+        raise ValueError("training.bc_demo_pretrain.stages must be a list when provided.")
+    if "stage_overrides" in bc_demo_pretrain and not isinstance(bc_demo_pretrain["stage_overrides"], dict):
+        raise ValueError("training.bc_demo_pretrain.stage_overrides must be a mapping when provided.")
+    if "gate_signal" in bc_demo_pretrain:
+        gate_signal = str(bc_demo_pretrain["gate_signal"]).strip().lower()
+        if gate_signal not in {"teacher_active", "bypass_active", "repulsion_active"}:
+            raise ValueError(
+                "training.bc_demo_pretrain.gate_signal must be one of "
+                "'teacher_active', 'bypass_active', or 'repulsion_active'."
+            )
+    for key in ("episodes", "epochs", "batch_size"):
+        if key in bc_demo_pretrain and int(bc_demo_pretrain[key]) < 0:
+            raise ValueError(f"training.bc_demo_pretrain.{key} must be non-negative.")
+    if "eval_episodes" in bc_demo_pretrain and int(bc_demo_pretrain["eval_episodes"]) < 0:
+        raise ValueError("training.bc_demo_pretrain.eval_episodes must be non-negative.")
+    if "post_pretrain_action_std" in bc_demo_pretrain and float(bc_demo_pretrain["post_pretrain_action_std"]) < 0.0:
+        raise ValueError("training.bc_demo_pretrain.post_pretrain_action_std must be non-negative.")
+    for stage_name, stage_override in dict(bc_demo_pretrain.get("stage_overrides", {}) or {}).items():
+        if not isinstance(stage_override, dict):
+            raise ValueError(f"training.bc_demo_pretrain.stage_overrides.{stage_name} must be a mapping.")
+        if "gate_signal" in stage_override:
+            gate_signal = str(stage_override["gate_signal"]).strip().lower()
+            if gate_signal not in {"teacher_active", "bypass_active", "repulsion_active"}:
+                raise ValueError(
+                    f"training.bc_demo_pretrain.stage_overrides.{stage_name}.gate_signal must be one of "
+                    "'teacher_active', 'bypass_active', or 'repulsion_active'."
+                )
+        for key in ("episodes", "epochs", "batch_size"):
+            if key in stage_override and int(stage_override[key]) < 0:
+                raise ValueError(
+                    f"training.bc_demo_pretrain.stage_overrides.{stage_name}.{key} must be non-negative."
+                )
+        if "eval_episodes" in stage_override and int(stage_override["eval_episodes"]) < 0:
+            raise ValueError(
+                f"training.bc_demo_pretrain.stage_overrides.{stage_name}.eval_episodes must be non-negative."
+            )
+        if "post_pretrain_action_std" in stage_override and float(stage_override["post_pretrain_action_std"]) < 0.0:
+            raise ValueError(
+                f"training.bc_demo_pretrain.stage_overrides.{stage_name}.post_pretrain_action_std must be non-negative."
+            )
+    if not isinstance(config.training.stage_entry_optimizer_reset, dict):
+        raise ValueError("training.stage_entry_optimizer_reset must be a mapping.")
+    stage_entry_optimizer_reset = dict(config.training.stage_entry_optimizer_reset)
+    if "stages" in stage_entry_optimizer_reset and not isinstance(stage_entry_optimizer_reset["stages"], list):
+        raise ValueError("training.stage_entry_optimizer_reset.stages must be a list when provided.")
+    if "stage_overrides" in stage_entry_optimizer_reset and not isinstance(stage_entry_optimizer_reset["stage_overrides"], dict):
+        raise ValueError("training.stage_entry_optimizer_reset.stage_overrides must be a mapping when provided.")
+    if "lr_multiplier" in stage_entry_optimizer_reset and float(stage_entry_optimizer_reset["lr_multiplier"]) <= 0.0:
+        raise ValueError("training.stage_entry_optimizer_reset.lr_multiplier must be positive.")
+    for stage_name, stage_override in dict(stage_entry_optimizer_reset.get("stage_overrides", {}) or {}).items():
+        if not isinstance(stage_override, dict):
+            raise ValueError(f"training.stage_entry_optimizer_reset.stage_overrides.{stage_name} must be a mapping.")
+        if "lr_multiplier" in stage_override and float(stage_override["lr_multiplier"]) <= 0.0:
+            raise ValueError(
+                f"training.stage_entry_optimizer_reset.stage_overrides.{stage_name}.lr_multiplier must be positive."
+            )
     if not isinstance(config.training.stage_regression_protection, dict):
         raise ValueError("training.stage_regression_protection must be a mapping.")
+    regression_protection = dict(config.training.stage_regression_protection)
+    if "stage_overrides" in regression_protection and not isinstance(regression_protection["stage_overrides"], dict):
+        raise ValueError("training.stage_regression_protection.stage_overrides must be a mapping when provided.")
+    for key in (
+        "activate_after_success_rate",
+        "absolute_drop_threshold",
+        "relative_drop_fraction",
+        "lr_multiplier_after_rollback",
+        "lr_multiplier_after_plateau_recovery",
+    ):
+        if key in regression_protection and float(regression_protection[key]) < 0.0:
+            raise ValueError(f"training.stage_regression_protection.{key} must be non-negative.")
+    for key in ("consecutive_bad_evals", "rollback_max_per_stage", "plateau_bad_eval_streak", "plateau_max_per_stage"):
+        if key in regression_protection and int(regression_protection[key]) < 0:
+            raise ValueError(f"training.stage_regression_protection.{key} must be non-negative.")
+    for stage_name, stage_override in dict(regression_protection.get("stage_overrides", {}) or {}).items():
+        if not isinstance(stage_override, dict):
+            raise ValueError(f"training.stage_regression_protection.stage_overrides.{stage_name} must be a mapping.")
+        for key in (
+            "activate_after_success_rate",
+            "absolute_drop_threshold",
+            "relative_drop_fraction",
+            "lr_multiplier_after_rollback",
+            "lr_multiplier_after_plateau_recovery",
+        ):
+            if key in stage_override and float(stage_override[key]) < 0.0:
+                raise ValueError(
+                    f"training.stage_regression_protection.stage_overrides.{stage_name}.{key} must be non-negative."
+                )
+        for key in ("consecutive_bad_evals", "rollback_max_per_stage", "plateau_bad_eval_streak", "plateau_max_per_stage"):
+            if key in stage_override and int(stage_override[key]) < 0:
+                raise ValueError(
+                    f"training.stage_regression_protection.stage_overrides.{stage_name}.{key} must be non-negative."
+                )
     if not isinstance(config.training.curriculum, list):
         raise ValueError("training.curriculum must be a list.")
     if config.evaluation.num_episodes <= 0:
