@@ -1,6 +1,6 @@
 name: "dynamic_uav_path_planning_hard_obstacles"
-version: "1.0.1"
-description: "Harder PPO+GNN preset with denser and faster moving obstacles"
+version: "1.0.4"
+description: "Harder PPO+GNN preset with dedicated outputs, denser obstacles, and faster moving traffic"
 tags: ["uav", "path-planning", "dynamic-airspace", "pybullet", "gnn", "ppo", "hard"]
 
 environment:
@@ -56,9 +56,9 @@ training:
   num_episodes: 1200
   save_interval: 25
   eval_interval: 25
-  checkpoint_dir: "checkpoints"
-  log_dir: "logs"
-  results_dir: "results"
+  checkpoint_dir: "checkpoints/hard_obstacles"
+  log_dir: "logs/hard_obstacles"
+  results_dir: "results/hard_obstacles"
   moving_average_window: 20
   eval_episodes: 12
 
@@ -67,8 +67,8 @@ evaluation:
   render: false
   deterministic: true
   save_trajectories: true
-  output_dir: "results/eval"
+  output_dir: "results/hard_obstacles/eval"
 
 visualization:
-  plot_dir: "results/plots"
-  trajectory_dir: "results/trajectories"
+  plot_dir: "results/hard_obstacles/plots"
+  trajectory_dir: "results/hard_obstacles/trajectories"

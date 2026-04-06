@@ -1,148 +1,131 @@
 # Dynamic UAV Path Planning
 
-Version: `1.0.2`
+Version: `1.0.4`
 
-This repository is a research codebase for learning-based UAV path planning in dynamic environments. It focuses on a graph-based observation pipeline, a PyBullet-backed single-UAV environment, and a PPO baseline that is straightforward to extend and evaluate.
+This repository is a research codebase for single-UAV path planning in dynamic obstacle fields. It combines a PyBullet-backed UAV, fixed-size dense graph observations, and a readable PPO baseline that is optimized for iteration on curriculum design, reward shaping, teacher guidance, and training infrastructure.
 
-The current release is centered on a reproducible training and evaluation workflow rather than benchmark claims.
+## Current Repo Status
 
-## Focus
+- The canonical full fresh curriculum is `configs/default_curriculum.yml`.
+  It is the preserved `v6` baseline, solves the bridge and medium stages, reaches `target_default_intro`, and records a stage-best intro success of `0.5` with `0.0` collision, but it does not advance to `target_default`.
+- The canonical target-stage continuation is `configs/default_post_commit.yaml`.
+  It is the preserved `v15` post-commit branch, resumes from the default curriculum intro checkpoint, and keeps the aggressive target-stage supervision stack, but `target_default` is still unsolved.
+- The helper presets now kept in the repo are `configs/default.yaml`, `configs/debug.yaml`, `configs/easy_train.yaml`, and `configs/hard_obstacles.yaml`.
 
-- learning-based UAV path planning
-- dynamic environments with moving obstacles
-- model-free reinforcement learning
-- graph neural network-ready policies
+The repo is therefore strongest today as:
+
+- a working research scaffold
+- a reproducible curriculum/evaluation pipeline
+- a target-stage experimentation platform
+
+It is not yet a repo with a confirmed stable `target_default` solution.
 
 ## What The Repo Includes
 
 - a PyBullet-backed dynamic airspace environment
-- dense graph observations with node, edge, and global features
-- a PPO-style graph actor-critic baseline in plain PyTorch
-- train, evaluate, smoke-test, and plotting entrypoints
-- config presets for default, debug, and training workflow variants
-- tests, linting, and release-ready experiment utilities
+- fixed-size dense graph observations
+- a graph PPO baseline in plain PyTorch
+- heuristic teacher reward and teacher-action supervision hooks
+- stage-aware behavior-cloning warm start
+- success-filtered teacher-demo pretraining
+- stage-local best checkpoints, rollback, and plateau recovery
+- training, evaluation, plotting, and smoke-test CLIs
+- result artifacts, trajectory export, and tests
 
-## Current Scope
+## Recommended Entry Points
 
-This release currently supports:
+Smoke-test the stack:
 
-- one controlled UAV
-- one goal node
-- configurable moving obstacle nodes
-- graph observations with a stable contract
-- repeatable train/eval artifact generation
+```bash
+python scripts/smoke_test.py --config configs/debug.yaml
+```
 
-This release does not yet include:
+Run the canonical full fresh curriculum baseline:
 
-- multi-UAV coordination logic
-- urban map assets or airspace rules
-- benchmark-complete evaluation suites
-- tuned training behavior or benchmark claims
-- mature experiment tracking dashboards
+```bash
+python scripts/train.py --config configs/default_curriculum.yml
+```
 
-## Design Choices
+Evaluate the best intro checkpoint from that run:
 
-- PyBullet simulation is kept through `gym-pybullet-drones`.
-- The graph observation contract is treated as the main stable interface.
-- The current baseline is deliberately simple and readable instead of benchmark-optimized.
-- Graph message passing is implemented in plain PyTorch so the project can later move to PyG or a different graph stack without redesigning the repo.
+```bash
+python scripts/evaluate.py \
+  --config configs/default_curriculum.yml \
+  --model checkpoints/default_curriculum/stages/target_default_intro/best_model.pth \
+  --stage-name target_default_intro
+```
+
+Run the canonical target-only continuation:
+
+```bash
+python scripts/train.py --config configs/default_post_commit.yaml
+```
 
 ## Repository Layout
 
 ```text
 dynamic-uav-path-planning/
 ├── CHANGELOG.md
+├── VERSION
+├── README.md
 ├── configs/
-│   ├── baselines/
-│   ├── scenarios/
-│   ├── debug.yaml
-│   ├── default.yaml
-│   ├── easy_train.yaml
-│   └── hard_obstacles.yaml
+├── docs/
 ├── scripts/
-│   ├── _common.py
-│   ├── evaluate.py
-│   ├── plot_results.py
-│   ├── smoke_test.py
-│   └── train.py
 ├── src/
-│   ├── agents/
-│   ├── core/
-│   ├── environments/
-│   ├── evaluation/
-│   ├── training/
-│   ├── utils/
-│   └── visualization/
 ├── tests/
 ├── checkpoints/
 ├── logs/
 ├── results/
 ├── pyproject.toml
-├── README.md
-├── VERSION
 └── requirements.txt
 ```
 
-## Quick Start
+Key script entrypoints:
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -e ".[dev]"
-python scripts/smoke_test.py
-python scripts/train.py --config configs/easy_train.yaml
-python scripts/evaluate.py --config configs/easy_train.yaml --model checkpoints/best_model.pth
-python scripts/plot_results.py
-```
+- `scripts/train.py`
+- `scripts/evaluate.py`
+- `scripts/render_first_eval_episode.py`
+- `scripts/plot_results.py`
+- `scripts/smoke_test.py`
 
-`gym-pybullet-drones` is installed from the upstream GitHub repository because it is not resolved from PyPI in this scaffold setup.
+## Current Training Stack
 
-## Curriculum Resume Notes
+The active stack now supports:
 
-Curriculum configs can now carry a `training.resume` block:
+- per-stage curriculum overrides
+- deterministic periodic evaluation during training
+- model-only resume with optional optimizer reset
+- stage-local best checkpoints
+- regression detection and rollback
+- plateau recovery with optional demo replay
+- behavior-cloning warm start from the heuristic teacher
+- teacher-demo pretraining with success filtering
+- post-pretrain evaluation capture
+- optional post-pretrain action-std reduction
+- richer terminal logging for training, evaluation, and pretraining
 
-```yaml
-training:
-  resume:
-    checkpoint_path: "checkpoints/corridor_dash/best_model.pth"
-    load_optimizer_state: false
-    load_scheduler_state: false
-    restore_curriculum_progress: false
-```
+## Current Limits
 
-You can also override the same behavior from the CLI:
+- single UAV only
+- fixed obstacle count within a curriculum
+- analytic moving-sphere obstacles, not full multi-agent traffic simulation
+- no maps, no-fly zones, or airspace rules
+- no confirmed stable `target_default` solution yet
 
-```bash
-python scripts/train.py \
-  --config configs/curriculum_goal_first_v2.yaml \
-  --resume checkpoints/corridor_dash/best_model.pth \
-  --reset-optimizer-on-resume
-```
+## Docs
 
-Per-stage best checkpoints are written under `checkpoints/<run>/stages/<stage_name>/best_model.pth`. When stage regression protection is enabled, those checkpoints are the rollback targets used inside the same stage.
+The current project snapshot is documented in:
 
-## Development Workflow
-
-```bash
-ruff check .
-pytest
-```
-
-Useful config presets:
-
-- `configs/default.yaml`
-- `configs/debug.yaml`
-- `configs/easy_train.yaml`
-- `configs/hard_obstacles.yaml`
-- `configs/baselines/mlp.yaml`
-- `configs/scenarios/dense_obstacles.yaml`
-
-Public repository documentation is consolidated into this README. Local working notes under `docs/` are intentionally kept out of Git.
+- `docs/current_status_report.md`
+- `docs/rl_status_report_2026-04-06.md`
+- `docs/architecture.md`
+- `docs/experiment_workflow.md`
+- `docs/training_upgrade_summary.md`
+- `docs/using_repo_for_learning_based_uav_path_planning.md`
 
 ## Near-Term Direction
 
 - preserve the graph observation contract
-- keep train/eval entrypoints stable
-- make environment and training internals easier to swap
-- add stronger experiment management before adding benchmark claims
+- keep the train/eval workflow reusable
+- stabilize target-stage behavior around lateral bypass
+- reach a reliable `target_default` continuation from the current intro checkpoint sources

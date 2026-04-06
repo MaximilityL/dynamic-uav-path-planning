@@ -287,7 +287,7 @@ def _auto_plot_training_results(config) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train the dynamic UAV path-planning scaffold")
-    parser.add_argument("--config", type=str, default="configs/default.yaml", help="Configuration file")
+    parser.add_argument("--config", type=str, default="configs/default_curriculum.yml", help="Configuration file")
     parser.add_argument("--resume", type=str, help="Checkpoint to resume from")
     parser.add_argument(
         "--reset-optimizer-on-resume",
@@ -322,10 +322,11 @@ def main() -> int:
     if args.restore_curriculum_progress:
         resume_overrides["restore_curriculum_progress"] = True
 
+    run_name = str(getattr(config, "name", Path(args.config).stem))
     print(
         "training_bootstrap "
         f"config={args.config} "
-        f"run_name={config.name} "
+        f"run_name={run_name} "
         f"episodes={int(config.training.num_episodes)} "
         f"seed={int(config.environment.seed)} "
         f"resume_arg={args.resume or 'none'}"

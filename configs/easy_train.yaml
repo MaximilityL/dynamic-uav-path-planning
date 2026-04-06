@@ -1,6 +1,6 @@
 name: "dynamic_uav_path_planning_easy_train"
-version: "1.0.1"
-description: "Easier PPO+GNN preset for quick learning-signal validation"
+version: "1.0.4"
+description: "Easier PPO+GNN preset with dedicated outputs for quick learning-signal validation"
 tags: ["uav", "path-planning", "dynamic-airspace", "pybullet", "gnn", "ppo", "easy"]
 
 environment:
@@ -22,12 +22,26 @@ environment:
   workspace_bounds: [[-3.0, 3.0], [-3.0, 3.0], [0.5, 2.5]]
   obstacle_speed_range: [0.05, 0.1]
   reward_weights:
-    goal: 40.0
-    progress: 8.0
-    collision: -40.0
+    goal: 100.0
+    progress: 50.0
+    progress_negative_scale: 2.0
+    frontier_progress: 50.0
+    progress_milestone_bonus: 2.0
+    progress_milestone_thresholds: [0.20, 0.40, 0.60, 0.80]
+    progress_milestone_bonus_weights: [2.0, 3.0, 5.0, 8.0]
+    collision: -10.0
     clearance: 0.5
-    effort: -0.005
-    time: -0.01
+    clearance_positive_scale: 0.0
+    effort: 0.0
+    time: -1
+    timeout: -50.0
+    timeout_distance: -100.0
+    remaining_distance: -1
+    stall: -10.0
+    stall_window_steps: 0
+    stall_progress_threshold: 0.0
+    stall_grace_steps: 0
+    stall_remaining_ratio_threshold: 0.22
 
 agent:
   type: "graph_ppo"
@@ -36,7 +50,7 @@ agent:
   edge_feature_dim: 4
   global_feature_dim: 4
   action_dim: 4
-  hidden_dim: 128
+  hidden_dim: 98
   message_passing_steps: 3
   lr_actor: 0.0003
   lr_critic: 0.0006
@@ -56,9 +70,9 @@ training:
   num_episodes: 160
   save_interval: 20
   eval_interval: 20
-  checkpoint_dir: "checkpoints"
-  log_dir: "logs"
-  results_dir: "results"
+  checkpoint_dir: "checkpoints/easy_train"
+  log_dir: "logs/easy_train"
+  results_dir: "results/easy_train"
   moving_average_window: 20
   eval_episodes: 8
 
@@ -67,8 +81,8 @@ evaluation:
   render: false
   deterministic: true
   save_trajectories: true
-  output_dir: "results/eval"
+  output_dir: "results/easy_train/eval"
 
 visualization:
-  plot_dir: "results/plots"
-  trajectory_dir: "results/trajectories"
+  plot_dir: "results/easy_train/plots"
+  trajectory_dir: "results/easy_train/trajectories"

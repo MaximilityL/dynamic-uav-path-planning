@@ -51,7 +51,7 @@ def _resolve_stage(config, stage_name: Optional[str], stage_index: Optional[int]
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evaluate a graph PPO checkpoint")
-    parser.add_argument("--config", type=str, default="configs/default.yaml", help="Configuration file")
+    parser.add_argument("--config", type=str, default="configs/default_curriculum.yml", help="Configuration file")
     parser.add_argument("--model", type=str, required=True, help="Checkpoint to evaluate")
     parser.add_argument("--episodes", type=int, help="Override evaluation episode count")
     parser.add_argument("--render", action="store_true", help="Run evaluation with the PyBullet GUI")

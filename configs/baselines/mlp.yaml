@@ -1,5 +1,0 @@
-name: "dynamic_uav_path_planning_mlp_baseline"
-description: "Non-graph encoder baseline for ablations"
-
-agent:
-  encoder_type: "mlp"

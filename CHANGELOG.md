@@ -2,6 +2,11 @@
 
 All notable changes to this project are recorded here.
 
+## [1.0.4] - 2026-04-06
+
+- Renamed the active training presets to `default_curriculum.yml` and `default_post_commit.yaml`, updated the default CLI config paths, and isolated helper presets into dedicated output folders.
+- Pruned historical configs and stale experiment artifacts while preserving the `v6` curriculum stage checkpoints under the new default layout.
+
 ## [1.0.3] - 2026-04-06
 
 - Added target-stage behavior-cloning warm starts, success-filtered teacher-demo pretraining, post-pretrain evaluation capture, and lower-noise continuation controls for the target curriculum.

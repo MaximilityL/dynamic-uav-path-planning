@@ -1,6 +1,6 @@
 name: "dynamic_uav_path_planning_default"
-version: "1.0.1"
-description: "Main PPO+GNN config for single-UAV dynamic obstacle avoidance"
+version: "1.0.4"
+description: "Lightweight single-stage PPO+GNN baseline for single-UAV dynamic obstacle avoidance"
 tags: ["uav", "path-planning", "dynamic-airspace", "pybullet", "gnn", "ppo"]
 
 environment:
@@ -56,9 +56,9 @@ training:
   num_episodes: 1000
   save_interval: 25
   eval_interval: 25
-  checkpoint_dir: "checkpoints"
-  log_dir: "logs"
-  results_dir: "results"
+  checkpoint_dir: "checkpoints/default"
+  log_dir: "logs/default"
+  results_dir: "results/default"
   moving_average_window: 20
   eval_episodes: 10
 
@@ -67,8 +67,8 @@ evaluation:
   render: false
   deterministic: true
   save_trajectories: true
-  output_dir: "results/eval"
+  output_dir: "results/default/eval"
 
 visualization:
-  plot_dir: "results/plots"
-  trajectory_dir: "results/trajectories"
+  plot_dir: "results/default/plots"
+  trajectory_dir: "results/default/trajectories"

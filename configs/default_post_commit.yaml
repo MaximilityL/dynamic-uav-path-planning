@@ -1,6 +1,6 @@
-name: "dynamic_uav_path_planning_post_commit_target_v15"
-version: "1.0.0"
-description: "Aggressive target-stage continuation that locks in post-pretrain checkpoints, lowers exploration noise, shortens intro wandering time, and advances from the v6 intro checkpoint toward stable target_default"
+name: "dynamic_uav_path_planning_default_post_commit"
+version: "1.0.4"
+description: "Default target-stage continuation that locks in post-pretrain checkpoints, lowers exploration noise, shortens intro wandering time, and advances from the default curriculum intro checkpoint toward stable target_default"
 tags:
   [
     "uav",
@@ -97,14 +97,14 @@ training:
   num_episodes: 480
   save_interval: 10
   eval_interval: 10
-  checkpoint_dir: "checkpoints/post_commit_target_v15"
-  log_dir: "logs/post_commit_target_v15"
-  results_dir: "results/post_commit_target_v15"
+  checkpoint_dir: "checkpoints/default_post_commit"
+  log_dir: "logs/default_post_commit"
+  results_dir: "results/default_post_commit"
   moving_average_window: 20
   eval_episodes: 10
   print_interval: 5
   resume:
-    checkpoint_path: "checkpoints/curriculum_goal_first_v6/stages/target_default_intro/best_model.pth"
+    checkpoint_path: "checkpoints/default_curriculum/stages/target_default_intro/best_model.pth"
     load_optimizer_state: false
     load_scheduler_state: false
     restore_curriculum_progress: false
@@ -339,8 +339,8 @@ evaluation:
   render: false
   deterministic: true
   save_trajectories: true
-  output_dir: "results/post_commit_target_v15/eval"
+  output_dir: "results/default_post_commit/eval"
 
 visualization:
-  plot_dir: "results/post_commit_target_v15/plots"
-  trajectory_dir: "results/post_commit_target_v15/trajectories"
+  plot_dir: "results/default_post_commit/plots"
+  trajectory_dir: "results/default_post_commit/trajectories"

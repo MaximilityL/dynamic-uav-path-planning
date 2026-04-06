@@ -1,5 +1,5 @@
 name: "dynamic_uav_path_planning_debug"
-version: "1.0.1"
+version: "1.0.4"
 description: "Tiny smoke/debug run for PPO+GNN path planning checks"
 tags: ["uav", "path-planning", "dynamic-airspace", "pybullet", "gnn", "ppo", "debug"]
 
@@ -56,9 +56,9 @@ training:
   num_episodes: 6
   save_interval: 3
   eval_interval: 3
-  checkpoint_dir: "checkpoints"
-  log_dir: "logs"
-  results_dir: "results"
+  checkpoint_dir: "checkpoints/debug"
+  log_dir: "logs/debug"
+  results_dir: "results/debug"
   moving_average_window: 4
   eval_episodes: 3
 
@@ -67,8 +67,8 @@ evaluation:
   render: false
   deterministic: true
   save_trajectories: true
-  output_dir: "results/eval"
+  output_dir: "results/debug/eval"
 
 visualization:
-  plot_dir: "results/plots"
-  trajectory_dir: "results/trajectories"
+  plot_dir: "results/debug/plots"
+  trajectory_dir: "results/debug/trajectories"
